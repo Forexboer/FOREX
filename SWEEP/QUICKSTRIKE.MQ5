@@ -17,7 +17,7 @@ input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
 
 sinput group "Fractals & BOS"
-input int     FractalLookback = 3;
+input int     FractalLookback = 3; // bars to look back/forward when detecting fractals
 enum ENUM_CONFIRM_TYPE { WickOnly, BodyBreak, Either };
 input ENUM_CONFIRM_TYPE SweepConfirmType = WickOnly;
 input ENUM_CONFIRM_TYPE BOSConfirmType   = BodyBreak;
@@ -176,7 +176,7 @@ void DetectFractals()
    lastBearishFractal = FractalPoint();
    lastBullishFractal = FractalPoint();
 
-   for (int i = 2; i < ArraySize(rates) - 2; i++)
+   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
    {
       if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
@@ -186,7 +186,7 @@ void DetectFractals()
       }
    }
 
-   for (int i = 2; i < ArraySize(rates) - 2; i++)
+   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
    {
       if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
