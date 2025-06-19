@@ -319,7 +319,7 @@ double CalculateLots(double slPips)
 
    if (tickVal <= 0 || tickSize <= 0)
    {
-      if (EnableDebug) Print("⚠️ Tick values invalid → fallback to min lot (0.01)");
+      if (EnableDebug) Print("⚠️ Tick values invalid -> fallback to min lot (0.01)");
       return 0.01;
    }
 
