@@ -268,12 +268,13 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       {
          if (SpreadAdjustmentType == Spread_Fixed)
             spreadAdjust = FixedSpreadValue * _Point;
-         else
+         else if (SpreadAdjustmentType == Spread_Dynamic)
          {
             long spread = 0;
             SymbolInfoInteger(_Symbol, SYMBOL_SPREAD, spread);
             spreadAdjust = spread * _Point;
          }
+         // Spread_None results in no adjustment
       }
 
       fibPrice += (forSell ? spreadAdjust : -spreadAdjust);
