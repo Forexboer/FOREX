@@ -261,7 +261,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    {
       double fibPrice = state.fibHigh - (state.fibHigh - state.fibLow) * (FibEntryLevel / 100.0);
       double sl = forSell ? state.fibHigh + SLBufferPips * _Point : state.fibLow - SLBufferPips * _Point;
-      double tp = forSell ? fibPrice - (fibPrice - sl) * RiskRewardRatio : fibPrice + (sl - fibPrice) * RiskRewardRatio;
+      double tp = forSell
+         ? fibPrice - (sl - fibPrice) * RiskRewardRatio
+         : fibPrice + (fibPrice - sl) * RiskRewardRatio;
 
       double spreadAdjust = 0.0;
       if (AddSpreadToEntry)
