@@ -1,3 +1,32 @@
+"""Derive trade levels from Fibonacci retracement values.
+
+The module defines :func:`calc_tp_sl` which calculates an entry price, stop
+loss and take profit based on Fibonacci levels. Parameters correspond to the
+high and low of the range and various risk settings.
+
+Parameters
+----------
+fib_high : float
+    High of the Fibonacci range.
+fib_low : float
+    Low of the Fibonacci range.
+entry_level : float, optional
+    Percentage of the range used for the entry price.
+sl_buffer_pips : float, optional
+    Buffer in pips applied beyond the Fibonacci level for the stop loss.
+rr_ratio : float, optional
+    Desired risk–reward ratio for calculating the take profit.
+for_sell : bool, optional
+    If ``True`` computes levels for a sell trade. Defaults to ``False``.
+point : float, optional
+    Value of one pip for the symbol.
+
+Returns
+-------
+tuple of float
+    ``(entry, sl, tp)`` with the entry price, stop loss and take profit.
+"""
+
 import math
 
 
