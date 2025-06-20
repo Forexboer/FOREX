@@ -78,5 +78,30 @@ class TestCalculateLots(unittest.TestCase):
 
         self.assertEqual(cl.CalculateLots(50), self.symbol_values[cl.SYMBOL_VOLUME_MIN])
 
+    @patch('calculate_lots.AccountInfoDouble')
+    @patch('calculate_lots.SymbolInfoDouble')
+    def test_calculate_lots_accepts_default_lot(self, mock_symbol, mock_account):
+        mock_account.side_effect = self.fake_account_info
+        mock_symbol.side_effect = self.fake_symbol_info
+
+        # Smaller account size to force a default lot calculation
+        self.account_balance = 100.0
+
+        self.assertEqual(cl.CalculateLots(100), cl.DEFAULT_LOT)
+
+    @patch('calculate_lots.AccountInfoDouble')
+    @patch('calculate_lots.SymbolInfoDouble')
+    def test_calculate_lots_secure_step_min_values(self, mock_symbol, mock_account):
+        mock_account.side_effect = self.fake_account_info
+        mock_symbol.side_effect = self.fake_symbol_info
+
+        # Provide invalid step and minimum lot values
+        self.symbol_values[cl.SYMBOL_VOLUME_STEP] = -0.05
+        self.symbol_values[cl.SYMBOL_VOLUME_MIN] = -0.01
+
+        self.account_balance = 100.0
+
+        self.assertEqual(cl.CalculateLots(1000), cl.DEFAULT_LOT)
+
 if __name__ == '__main__':
     unittest.main()

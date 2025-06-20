@@ -12,6 +12,9 @@ SYMBOL_VOLUME_MAX = 5
 _Symbol = "EURUSD"
 _Point = 0.0001
 
+# Default lot size returned when the symbol data is not usable
+DEFAULT_LOT = 0.01
+
 # These functions will be mocked in tests
 
 def AccountInfoDouble(property_id):
@@ -49,6 +52,14 @@ def CalculateLots(sl_pips, risk_percent=1.0):
     step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP)
     min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)
     max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX)
+
+    # Validate step and minimum lot values to avoid invalid calculations
+    if step <= 0:
+        step = min_lot if min_lot > 0 else DEFAULT_LOT
+    if min_lot <= 0:
+        min_lot = DEFAULT_LOT
+    if max_lot < min_lot:
+        max_lot = min_lot
 
     lots = math.floor(raw_lots / step) * step
     decimals = _count_decimals(step)
