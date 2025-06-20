@@ -22,6 +22,7 @@ input int     FractalLookback = 3; // bars to look back/forward when detecting f
 enum ENUM_CONFIRM_TYPE { WickOnly, BodyBreak, Either };
 input ENUM_CONFIRM_TYPE SweepConfirmType = WickOnly;
 input ENUM_CONFIRM_TYPE BOSConfirmType   = BodyBreak;
+input int     BOSStopBufferPips       = 5;  // distance beyond BOS for stop orders
 
 sinput group "Fibonacci Entry"
 input double  FibEntryLevel = 50.0;  // Only this level will be used
@@ -68,9 +69,12 @@ struct SetupState
    bool bosConfirmed;
    bool fibLocked;
    bool allowLegAdjust;
+   bool stopLocked;
    ulong orderTicket;
+   ulong stopTicket;
    double fibHigh;
    double fibLow;
+   double bosPrice;
    string label;
 };
 SetupState buyState, sellState;
@@ -262,6 +266,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (bos)
       {
          state.bosConfirmed = true;
+         state.bosPrice = forSell ? low : high;
          if (EnableDebug)
          {
             Print(prefix, " BOS confirmed at ", (forSell ? low : high));
@@ -270,6 +275,48 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
          if (ShowBOSLines)
             DrawHorizontalLine("BOS_" + prefix, forSell ? low : high, BOSColor);
+      }
+   }
+
+   if (state.bosConfirmed && !state.stopLocked)
+   {
+      if (state.stopTicket > 0 && !OrderSelect(state.stopTicket))
+      {
+         state.stopLocked = true;
+         state.stopTicket = 0;
+      }
+
+      if (!state.stopLocked && state.stopTicket == 0)
+      {
+         double stopEntry = forSell
+            ? state.bosPrice - BOSStopBufferPips * _Point
+            : state.bosPrice + BOSStopBufferPips * _Point;
+
+         double sl = forSell ? state.fibHigh + SLBufferPips * _Point
+                              : state.fibLow - SLBufferPips * _Point;
+         double tp = forSell
+            ? stopEntry - (sl - stopEntry) * RiskRewardRatio
+            : stopEntry + (stopEntry - sl) * RiskRewardRatio;
+
+         long stoplevel = 0;
+         SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stoplevel);
+         double minDistPoints = (double)stoplevel * _Point;
+
+         if (MathAbs(stopEntry - sl) >= minDistPoints && MathAbs(stopEntry - tp) >= minDistPoints)
+         {
+            double stopPips = MathAbs(sl - stopEntry) / _Point;
+            double lot = CalculateLots(stopPips);
+            if (lot > 0.0)
+            {
+               bool placed = forSell
+                  ? trade.SellStop(lot, stopEntry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "ALS_SELL_STOP")
+                  : trade.BuyStop(lot, stopEntry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "ALS_BUY_STOP");
+               if (placed)
+               {
+                  state.stopTicket = trade.ResultOrder();
+               }
+            }
+         }
       }
    }
 
