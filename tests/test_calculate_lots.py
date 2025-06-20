@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 import calculate_lots as cl
+import tp_sl_calc as calc
 
 class TestCalculateLots(unittest.TestCase):
     def setUp(self):
@@ -36,6 +37,24 @@ class TestCalculateLots(unittest.TestCase):
 
         # Larger stop-loss reduces lot size
         self.assertEqual(cl.CalculateLots(200), 0.5)
+
+    @patch('calculate_lots.AccountInfoDouble')
+    @patch('calculate_lots.SymbolInfoDouble')
+    def test_calculate_lots_dynamic_stop(self, mock_symbol, mock_account):
+        mock_account.side_effect = self.fake_account_info
+        mock_symbol.side_effect = self.fake_symbol_info
+
+        entry, sl, _ = calc.calc_tp_sl(1.1000, 1.0900, entry_level=50,
+                                       sl_buffer_pips=10, rr_ratio=3.0,
+                                       for_sell=False, point=cl._Point)
+        stop_pips = round(abs(sl - entry) / cl._Point, 2)
+        self.assertEqual(cl.CalculateLots(stop_pips), 1.0)
+
+        entry, sl, _ = calc.calc_tp_sl(1.1000, 1.0900, entry_level=50,
+                                       sl_buffer_pips=150, rr_ratio=3.0,
+                                       for_sell=False, point=cl._Point)
+        stop_pips = round(abs(sl - entry) / cl._Point, 2)
+        self.assertEqual(cl.CalculateLots(stop_pips), 0.5)
 
 if __name__ == '__main__':
     unittest.main()

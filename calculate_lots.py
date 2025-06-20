@@ -22,7 +22,7 @@ def SymbolInfoDouble(symbol, property_id):
 
 
 def CalculateLots(sl_pips, risk_percent=1.0):
-    """Replicates the lot calculation logic from QUICKSTRIKE.MQ5."""
+    """Calculate position size given a stop distance in pips."""
     acc_bal = AccountInfoDouble(ACCOUNT_BALANCE)
     risk = acc_bal * risk_percent / 100.0
 

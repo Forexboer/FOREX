@@ -333,7 +333,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          return;
       }
 
-      double lot = CalculateLots(SLBufferPips);
+      double stopPips = MathAbs(sl - fibPrice) / _Point;
+      double lot = CalculateLots(stopPips);
       if (lot <= 0.0)
       {
          if (EnableDebug) Print("❌ ", prefix, " entry skipped: Lot size = 0");
