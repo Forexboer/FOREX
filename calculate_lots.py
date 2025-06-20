@@ -50,6 +50,12 @@ def CalculateLots(sl_pips, risk_percent=1.0):
     min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)
     max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX)
 
+    # Validate lot sizing information before proceeding. A non-positive step or
+    # minimum lot would lead to incorrect calculations (including division by
+    # zero), so fall back to the default minimum lot size in that case.
+    if step <= 0 or min_lot <= 0:
+        return 0.01
+
     lots = math.floor(raw_lots / step) * step
     decimals = _count_decimals(step)
     lots = round(lots, decimals)

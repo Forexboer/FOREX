@@ -67,5 +67,18 @@ class TestCalculateLots(unittest.TestCase):
 
         self.assertEqual(cl.CalculateLots(426.63), 0.234)
 
+    @patch('calculate_lots.AccountInfoDouble')
+    @patch('calculate_lots.SymbolInfoDouble')
+    def test_returns_default_on_invalid_step_or_min(self, mock_symbol, mock_account):
+        mock_account.side_effect = self.fake_account_info
+        mock_symbol.side_effect = self.fake_symbol_info
+
+        self.symbol_values[cl.SYMBOL_VOLUME_STEP] = 0.0
+        self.assertEqual(cl.CalculateLots(50), 0.01)
+
+        self.symbol_values[cl.SYMBOL_VOLUME_STEP] = 0.01
+        self.symbol_values[cl.SYMBOL_VOLUME_MIN] = 0.0
+        self.assertEqual(cl.CalculateLots(50), 0.01)
+
 if __name__ == '__main__':
     unittest.main()
