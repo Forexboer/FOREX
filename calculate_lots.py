@@ -1,3 +1,25 @@
+"""Utilities for computing position size.
+
+The module exposes :func:`CalculateLots` which returns the recommended lot
+size for a trade based on a stop-loss distance and the percentage of account
+balance to risk. Account and symbol information is retrieved via the
+``AccountInfoDouble`` and ``SymbolInfoDouble`` functions that replicate the
+MetaTrader API.
+
+Parameters
+----------
+sl_pips : float
+    Stop-loss distance in pips provided to :func:`CalculateLots`.
+risk_percent : float, optional
+    Percentage of the account balance to risk, default ``1.0``.
+
+Returns
+-------
+float
+    Recommended lot size rounded to the symbol's volume step. If symbol data
+    is not available a ``DEFAULT_LOT`` value is returned.
+"""
+
 import math
 
 # Constants mirroring MQL5 enums
