@@ -177,24 +177,36 @@ void DetectFractals()
    lastBearishFractal = FractalPoint();
    lastBullishFractal = FractalPoint();
 
-   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
+   int total = ArraySize(rates);
+   for (int i = FractalLookback; i < total - FractalLookback; i++)
    {
-      if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
+      bool bear = true, bull = true;
+      for (int j = 1; j <= FractalLookback; j++)
       {
+         if (bear && (rates[i].high <= rates[i - j].high || rates[i].high <= rates[i + j].high))
+            bear = false;
+         if (bull && (rates[i].low >= rates[i - j].low || rates[i].low >= rates[i + j].low))
+            bull = false;
+         if (!bear && !bull)
+            break;
+      }
+
+      if (bear && lastBearishFractal.time == 0)
+      {
+         lastBearishFractal.index = i;
          lastBearishFractal.price = rates[i].high;
          lastBearishFractal.time  = rates[i].time;
-         break;
       }
-   }
 
-   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
-   {
-      if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
+      if (bull && lastBullishFractal.time == 0)
       {
+         lastBullishFractal.index = i;
          lastBullishFractal.price = rates[i].low;
          lastBullishFractal.time  = rates[i].time;
-         break;
       }
+
+      if (lastBearishFractal.time != 0 && lastBullishFractal.time != 0)
+         break;
    }
 }
 //+------------------------------------------------------------------+
