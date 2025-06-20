@@ -11,3 +11,7 @@ python3 -m unittest discover -s tests
 ```
 
 This command will run all tests inside the `tests/` directory.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
