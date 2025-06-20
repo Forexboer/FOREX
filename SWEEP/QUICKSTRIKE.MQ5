@@ -15,7 +15,7 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 3.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
-input int     TP_SL_StopLevelPips     = 10;   // minimum allowed distance between TP and SL
+input int     TP_SL_StopLevelPips     = 10; // minimum allowed distance between TP and SL
 
 sinput group "Fractals & BOS"
 input int     FractalLookback = 3; // bars to look back/forward when detecting fractals
