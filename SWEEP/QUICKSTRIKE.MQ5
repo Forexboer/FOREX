@@ -22,7 +22,13 @@ input int     FractalLookback = 3; // bars to look back/forward when detecting f
 enum ENUM_CONFIRM_TYPE { WickOnly, BodyBreak, Either };
 input ENUM_CONFIRM_TYPE SweepConfirmType = WickOnly;
 input ENUM_CONFIRM_TYPE BOSConfirmType   = BodyBreak;
-input int     BOSStopBufferPips       = 5;  // distance beyond BOS for stop orders
+sinput group "Entry Settings"
+enum ENUM_ENTRY_TYPE { Entry_Stop, Entry_Limit, Entry_Both };
+input ENUM_ENTRY_TYPE EntryType      = Entry_Both; // which type of entries to place
+input int     EntryOffsetPips        = 2;          // distance beyond BOS for stop orders
+input bool    EnableMidLegSellLimit  = true;       // enable 50% pullback limit entry
+input int     MinLegSizePips         = 5;          // minimum leg size to allow limit
+input int     SellLimitOffsetPips    = 0;          // optional offset from 50% level
 
 sinput group "Fibonacci Entry"
 input double  FibEntryLevel = 50.0;  // Only this level will be used
@@ -49,6 +55,12 @@ input color SweepColor            = clrRed;
 input color BOSColor              = clrLime;
 input color FibLineColor          = clrYellow;
 
+sinput group "ZigZag Settings"
+input bool  UseZigZag       = true;
+input int   ZigZagDepth     = 12;
+input int   ZigZagDeviation = 5;
+input int   ZigZagBackstep  = 3;
+
 sinput group "Debugging"
 input bool EnableDebug = true;
 
@@ -59,6 +71,7 @@ datetime asianStartTime, asianEndTime;
 double asianHigh = 0.0, asianLow = 0.0;
 bool asianSessionRecorded = false;
 int glLastProcessedDay = -1;
+int zigzagHandle = INVALID_HANDLE;
 
 struct FractalPoint { int index; double price; datetime time; };
 FractalPoint lastBearishFractal, lastBullishFractal;
@@ -88,10 +101,18 @@ int OnInit()
    trade.SetDeviationInPoints(30);
    glTimeBarOpen = D'1970.01.01 00:00';
    ObjectsDeleteAll(0, "", 0);
+   if (UseZigZag)
+   {
+      zigzagHandle = iCustom(_Symbol, _Period, "Examples\\ZigZag", ZigZagDepth, ZigZagDeviation, ZigZagBackstep);
+      if (zigzagHandle != INVALID_HANDLE)
+         ChartIndicatorAdd(0,0,zigzagHandle);
+   }
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason)
 {
+   if (zigzagHandle != INVALID_HANDLE)
+      IndicatorRelease(zigzagHandle);
    ObjectsDeleteAll(0, "", 0);
 }
 
@@ -278,7 +299,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       }
    }
 
-   if (state.bosConfirmed && !state.stopLocked)
+   if (state.bosConfirmed && !state.stopLocked && (EntryType==Entry_Stop || EntryType==Entry_Both))
    {
       if (state.stopTicket > 0 && !OrderSelect(state.stopTicket))
       {
@@ -289,8 +310,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (!state.stopLocked && state.stopTicket == 0)
       {
          double stopEntry = forSell
-            ? state.bosPrice - BOSStopBufferPips * _Point
-            : state.bosPrice + BOSStopBufferPips * _Point;
+            ? state.bosPrice - EntryOffsetPips * _Point
+            : state.bosPrice + EntryOffsetPips * _Point;
 
          double sl = forSell ? state.fibHigh + SLBufferPips * _Point
                               : state.fibLow - SLBufferPips * _Point;
@@ -320,7 +341,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       }
    }
 
-   if (state.bosConfirmed && !state.fibLocked)
+   if (state.bosConfirmed && !state.fibLocked && (EntryType==Entry_Limit || EntryType==Entry_Both) && EnableMidLegSellLimit)
    {
       if (state.orderTicket > 0 && !OrderSelect(state.orderTicket))
       {
@@ -337,6 +358,13 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       }
 
       double fibPrice = state.fibHigh - (state.fibHigh - state.fibLow) * (FibEntryLevel / 100.0);
+      double legSize = forSell
+         ? MathAbs(state.fibHigh - state.bosPrice) / _Point
+         : MathAbs(state.bosPrice - state.fibLow) / _Point;
+      if (legSize < MinLegSizePips)
+         return;
+
+      fibPrice += (forSell ? -SellLimitOffsetPips : SellLimitOffsetPips) * _Point;
       double sl = forSell ? state.fibHigh + SLBufferPips * _Point : state.fibLow - SLBufferPips * _Point;
       double tp = forSell
          ? fibPrice - (sl - fibPrice) * RiskRewardRatio
