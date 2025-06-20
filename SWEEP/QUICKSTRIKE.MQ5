@@ -18,7 +18,10 @@ input int     MaxDistanceFromAsianBox = 25;
 input int     TP_SL_StopLevelPips     = 10; // minimum allowed distance between TP and SL
 
 sinput group "Fractals & BOS"
-input int     FractalLookback = 3; // bars to look back/forward when detecting fractals
+// Default to 2 bars on either side so the pattern matches the classic
+// 1-2-3 fractal structure. This makes the central bar the highest/lowest
+// compared to two bars before and after.
+input int     FractalLookback = 2; // bars to look back/forward when detecting fractals
 enum ENUM_CONFIRM_TYPE { WickOnly, BodyBreak, Either };
 input ENUM_CONFIRM_TYPE SweepConfirmType = WickOnly;
 input ENUM_CONFIRM_TYPE BOSConfirmType   = BodyBreak;
