@@ -15,6 +15,7 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 3.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
+input int     TP_SL_StopLevelPips     = 10;   // minimum allowed distance between TP and SL
 
 sinput group "Fractals & BOS"
 input int     FractalLookback = 3; // bars to look back/forward when detecting fractals
@@ -283,6 +284,25 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
       double dist = MathAbs(fibPrice - (forSell ? asianHigh : asianLow)) / _Point;
       if (dist > MaxDistanceFromAsianBox) return;
+
+      //--- Ensure stop distances respect broker limits
+      long stoplevel = 0;
+      SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stoplevel);
+      double minDistPoints = (double)stoplevel * _Point;
+
+      if (MathAbs(fibPrice - sl) < minDistPoints || MathAbs(fibPrice - tp) < minDistPoints)
+      {
+         if (EnableDebug) Print("❌ ", prefix, " entry skipped: stop distances below broker stoplevel");
+         return;
+      }
+
+      //--- Ensure TP and SL have sufficient distance between them
+      double sltpDistance = MathAbs(tp - sl) / _Point;
+      if (sltpDistance < TP_SL_StopLevelPips)
+      {
+         if (EnableDebug) Print("❌ ", prefix, " entry skipped: TP-SL distance ", sltpDistance, " < ", TP_SL_StopLevelPips);
+         return;
+      }
 
       double lot = CalculateLots(SLBufferPips);
       if (lot <= 0.0)
