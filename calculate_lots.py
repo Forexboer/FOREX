@@ -21,6 +21,14 @@ def SymbolInfoDouble(symbol, property_id):
     raise NotImplementedError
 
 
+def _count_decimals(step):
+    """Return the number of decimal places required to represent the step."""
+    step_str = f"{step:.10f}".rstrip("0")
+    if "." in step_str:
+        return len(step_str.split(".")[1])
+    return 0
+
+
 def CalculateLots(sl_pips, risk_percent=1.0):
     """Calculate position size given a stop distance in pips."""
     acc_bal = AccountInfoDouble(ACCOUNT_BALANCE)
@@ -43,7 +51,8 @@ def CalculateLots(sl_pips, risk_percent=1.0):
     max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX)
 
     lots = math.floor(raw_lots / step) * step
-    lots = round(lots, 2)
+    decimals = _count_decimals(step)
+    lots = round(lots, decimals)
 
     if lots < min_lot:
         return min_lot
