@@ -16,6 +16,7 @@ input double  RiskRewardRatio         = 3.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
 input int     TP_SL_StopLevelPips     = 10;   // minimum allowed distance between TP and SL
+input int     BOSStopBufferPips       = 2;    // stop-entry distance beyond BOS price
 
 sinput group "Fractals & BOS"
 input int     FractalLookback = 3; // bars to look back/forward when detecting fractals
@@ -66,8 +67,10 @@ struct SetupState
    bool sweepDetected;
    bool bosConfirmed;
    bool fibLocked;
+   bool stopLocked;
    double fibHigh;
    double fibLow;
+   double bosPrice;
    string label;
 };
 SetupState buyState, sellState;
@@ -247,6 +250,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (bos)
       {
          state.bosConfirmed = true;
+         state.bosPrice = forSell ? low : high;
          if (EnableDebug)
          {
             Print(prefix, " BOS confirmed at ", (forSell ? low : high));
@@ -256,6 +260,76 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (ShowBOSLines)
             DrawHorizontalLine("BOS_" + prefix, forSell ? low : high, BOSColor);
       }
+   }
+
+   if (state.bosConfirmed && !state.stopLocked)
+   {
+      double currentPrice = close;
+      if ((forSell && currentPrice > state.bosPrice) || (!forSell && currentPrice < state.bosPrice))
+         return;
+
+      double distCur = MathAbs(currentPrice - (forSell ? asianHigh : asianLow)) / _Point;
+      if (distCur > MaxDistanceFromAsianBox) return;
+
+      double stopPrice = state.bosPrice + (forSell ? -BOSStopBufferPips * _Point : BOSStopBufferPips * _Point);
+
+      double spreadAdjust = 0.0;
+      if (AddSpreadToEntry)
+      {
+         if (SpreadAdjustmentType == Spread_Fixed)
+            spreadAdjust = FixedSpreadValue * _Point;
+         else if (SpreadAdjustmentType == Spread_Dynamic)
+         {
+            long spread = 0;
+            SymbolInfoInteger(_Symbol, SYMBOL_SPREAD, spread);
+            spreadAdjust = spread * _Point;
+         }
+      }
+
+      stopPrice += (forSell ? spreadAdjust : -spreadAdjust);
+
+      double sl = forSell ? state.fibHigh + SLBufferPips * _Point : state.fibLow - SLBufferPips * _Point;
+      double tp = forSell
+         ? stopPrice - (sl - stopPrice) * RiskRewardRatio
+         : stopPrice + (stopPrice - sl) * RiskRewardRatio;
+
+      long stoplevel = 0;
+      SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stoplevel);
+      double minDistPoints = (double)stoplevel * _Point;
+
+      if (MathAbs(stopPrice - sl) < minDistPoints || MathAbs(stopPrice - tp) < minDistPoints)
+      {
+         if (EnableDebug) Print("❌ ", prefix, " stop-entry skipped: stop distances below broker stoplevel");
+         return;
+      }
+
+      double sltpDistance = MathAbs(tp - sl) / _Point;
+      if (sltpDistance < TP_SL_StopLevelPips)
+      {
+         if (EnableDebug) Print("❌ ", prefix, " stop-entry skipped: TP-SL distance ", sltpDistance, " < ", TP_SL_StopLevelPips);
+         return;
+      }
+
+      double lot = CalculateLots(SLBufferPips);
+      if (lot <= 0.0)
+      {
+         if (EnableDebug) Print("❌ ", prefix, " stop-entry skipped: Lot size = 0");
+         return;
+      }
+
+      if (EnableDebug)
+      {
+         Print("📐 STOP ", prefix, " Entry = ", stopPrice, " | SL = ", sl, " | TP = ", tp, " | Lot = ", lot);
+      }
+
+      bool placed = forSell
+         ? trade.SellStop(lot, stopPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "ALS_STOP_SELL")
+         : trade.BuyStop(lot, stopPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "ALS_STOP_BUY");
+
+      if (placed && ShowFib)
+         DrawHorizontalLine("STOP_" + prefix, stopPrice, FibLineColor);
+
+      state.stopLocked = true;
    }
 
    if (state.bosConfirmed && !state.fibLocked)
