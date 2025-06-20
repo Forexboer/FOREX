@@ -25,6 +25,7 @@ input ENUM_CONFIRM_TYPE BOSConfirmType   = BodyBreak;
 
 sinput group "Fibonacci Entry"
 input double  FibEntryLevel = 50.0;  // Only this level will be used
+input bool    EnableDynamicPullbackLeg = true;
 
 sinput group "Execution Filters"
 input bool    TradeBuySetups   = true;
@@ -66,6 +67,8 @@ struct SetupState
    bool sweepDetected;
    bool bosConfirmed;
    bool fibLocked;
+   bool allowLegAdjust;
+   ulong orderTicket;
    double fibHigh;
    double fibLow;
    string label;
@@ -260,6 +263,20 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
    if (state.bosConfirmed && !state.fibLocked)
    {
+      if (state.orderTicket > 0 && !OrderSelect(state.orderTicket))
+      {
+         state.fibLocked = true;
+         state.allowLegAdjust = false;
+         state.orderTicket = 0;
+         return;
+      }
+
+      if (EnableDynamicPullbackLeg && state.allowLegAdjust)
+      {
+         if (forSell && high > state.fibHigh)  state.fibHigh = high;
+         if (!forSell && low < state.fibLow)   state.fibLow  = low;
+      }
+
       double fibPrice = state.fibHigh - (state.fibHigh - state.fibLow) * (FibEntryLevel / 100.0);
       double sl = forSell ? state.fibHigh + SLBufferPips * _Point : state.fibLow - SLBufferPips * _Point;
       double tp = forSell
@@ -316,14 +333,22 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          Print("📐 ", prefix, " Entry = ", fibPrice, " | SL = ", sl, " | TP = ", tp, " | Lot = ", lot);
       }
 
+      if (state.orderTicket > 0)
+         trade.OrderDelete(state.orderTicket);
+
       bool placed = forSell
          ? trade.SellLimit(lot, fibPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "ALS_SELL")
          : trade.BuyLimit(lot, fibPrice, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "ALS_BUY");
 
-      if (placed && ShowFib)
-         DrawHorizontalLine("FIB_" + prefix, fibPrice, FibLineColor);
-
-      state.fibLocked = true;
+      if (placed)
+      {
+         state.orderTicket = trade.ResultOrder();
+         if (ShowFib)
+            DrawHorizontalLine("FIB_" + prefix, fibPrice, FibLineColor);
+         state.allowLegAdjust = EnableDynamicPullbackLeg;
+         if (!EnableDynamicPullbackLeg)
+            state.fibLocked = true;
+      }
    }
 }
 
