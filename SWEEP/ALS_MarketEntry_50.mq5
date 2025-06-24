@@ -42,6 +42,7 @@ bool asianBoxDrawn = false;
 
 struct FractalPoint { double price; datetime time; };
 FractalPoint lastBullFractal, lastBearFractal;
+FractalPoint prevBullFractal, prevBearFractal;
 
 struct SetupState
 {
@@ -51,6 +52,9 @@ struct SetupState
    double legHigh;
    double legLow;
    double entryPrice;
+   double slPrice;
+   double tpPrice;
+   ulong  positionTicket;
 };
 SetupState buyState, sellState;
 
@@ -77,6 +81,10 @@ void OnTick()
       asianBoxDrawn = false;
       buyState = SetupState();
       sellState = SetupState();
+      lastBullFractal = FractalPoint();
+      lastBearFractal = FractalPoint();
+      prevBullFractal = FractalPoint();
+      prevBearFractal = FractalPoint();
       ObjectsDeleteAll(0, "", 0);
    }
 
@@ -132,15 +140,15 @@ void DetectFractals()
    ArraySetAsSeries(rates, true);
    CopyRates(_Symbol, _Period, 0, 50, rates);
 
-   lastBullFractal = FractalPoint();
-   lastBearFractal = FractalPoint();
+   FractalPoint newBull = FractalPoint();
+   FractalPoint newBear = FractalPoint();
 
    for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
       if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
-         lastBullFractal.price = rates[i].low;
-         lastBullFractal.time  = rates[i].time;
+         newBull.price = rates[i].low;
+         newBull.time  = rates[i].time;
          break;
       }
    }
@@ -149,9 +157,27 @@ void DetectFractals()
    {
       if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
-         lastBearFractal.price = rates[i].high;
-         lastBearFractal.time  = rates[i].time;
+         newBear.price = rates[i].high;
+         newBear.time  = rates[i].time;
          break;
+      }
+   }
+
+   if (newBull.price > 0 && newBull.time != lastBullFractal.time)
+   {
+      if (lastBullFractal.price == 0 || newBull.price < lastBullFractal.price)
+      {
+         prevBullFractal = lastBullFractal;
+         lastBullFractal = newBull;
+      }
+   }
+
+   if (newBear.price > 0 && newBear.time != lastBearFractal.time)
+   {
+      if (lastBearFractal.price == 0 || newBear.price > lastBearFractal.price)
+      {
+         prevBearFractal = lastBearFractal;
+         lastBearFractal = newBear;
       }
    }
 
@@ -210,14 +236,22 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (BOSConfirmType == WickOnly) bos = low < bosFractal.price;
          else if (BOSConfirmType == BodyBreak) bos = close < bosFractal.price;
          else bos = low < bosFractal.price || close < bosFractal.price;
-         if (bos) state.legLow = low;
+         if (bos)
+         {
+            state.legLow = low;
+            state.slPrice = bosFractal.price + SLBufferPips * _Point;
+         }
       }
       else
       {
          if (BOSConfirmType == WickOnly) bos = high > bosFractal.price;
          else if (BOSConfirmType == BodyBreak) bos = close > bosFractal.price;
          else bos = high > bosFractal.price || close > bosFractal.price;
-         if (bos) state.legHigh = high;
+         if (bos)
+         {
+            state.legHigh = high;
+            state.slPrice = bosFractal.price - SLBufferPips * _Point;
+         }
       }
 
       if (bos)
@@ -230,37 +264,52 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    }
 
    // 3. Na BOS: volg leg verder
-   if (!state.entryTriggered && state.bosConfirmed)
+   if (state.bosConfirmed)
    {
-        double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
       if (forSell && price < state.legLow) state.legLow = price;
       if (!forSell && price > state.legHigh) state.legHigh = price;
 
       double entry = (state.legHigh + state.legLow) / 2.0;
-      state.entryPrice = entry;
+      double tp = forSell ? entry - (state.slPrice - entry) * RiskRewardRatio
+                          : entry + (entry - state.slPrice) * RiskRewardRatio;
 
-      // Visuele lijn
-      if (ShowLines)
-         DrawLine("ENTRY_" + side, entry, EntryLineColor);
-
-      // Als prijs de 50% raakt, plaats MARKET-order
-      bool trigger = forSell ? (price >= entry) : (price <= entry);
-      if (trigger)
+      if (!state.entryTriggered)
       {
-         double sl = forSell ? sweepFractal.price + SLBufferPips * _Point : sweepFractal.price - SLBufferPips * _Point;
-         double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
-         double lot = CalculateLots(MathAbs(entry - sl) / _Point);
-         if (lot <= 0.0) return;
+         state.entryPrice = entry;
+         if (ShowLines)
+            DrawLine("ENTRY_" + side, entry, EntryLineColor);
 
-         bool sent = forSell
-            ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
-            : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
-
-         if (sent)
+         bool trigger = forSell ? (price >= entry) : (price <= entry);
+         if (trigger)
          {
-            state.entryTriggered = true;
-            if (EnableDebug)
-               Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
+            double lot = CalculateLots(MathAbs(entry - state.slPrice) / _Point);
+            if (lot <= 0.0) return;
+
+            bool sent = forSell
+               ? trade.Sell(lot, _Symbol, 0, state.slPrice, tp, "ALS_17_SELL")
+               : trade.Buy(lot, _Symbol, 0, state.slPrice, tp, "ALS_17_BUY");
+
+            if (sent)
+            {
+               state.entryTriggered = true;
+               state.tpPrice = tp;
+               state.positionTicket = trade.ResultOrder();
+               if (EnableDebug)
+                  Print("📥 ", side, " MARKET order at ", entry, " SL=", state.slPrice, " TP=", tp, " Lot=", lot);
+            }
+         }
+      }
+      else
+      {
+         if (MathAbs(tp - state.tpPrice) >= _Point)
+         {
+            if (trade.PositionModify(_Symbol, state.slPrice, tp))
+            {
+               state.tpPrice = tp;
+               if (EnableDebug)
+                  Print("🔄 ", side, " TP adjusted to ", tp);
+            }
          }
       }
    }
