@@ -42,12 +42,14 @@ bool asianBoxDrawn = false;
 
 struct FractalPoint { double price; datetime time; };
 FractalPoint lastBullFractal, lastBearFractal;
+FractalPoint prevBullFractal, prevBearFractal;
 
 struct SetupState
 {
    bool sweepDetected;
    bool bosConfirmed;
    bool entryTriggered;
+   double slFractal;
    double legHigh;
    double legLow;
    double entryPrice;
@@ -86,8 +88,14 @@ void OnTick()
    DetectFractals();
    if (ShowFractals) DrawFractals();
 
-   RunSetup(false, buyState, lastBullFractal, lastBearFractal); // BUY
-   RunSetup(true, sellState, lastBearFractal, lastBullFractal); // SELL
+   bool hasPos = HasOpenPosition();
+   if(!hasPos)
+   {
+      if(buyState.entryTriggered) buyState = SetupState();
+      if(sellState.entryTriggered) sellState = SetupState();
+      RunSetup(false, buyState, lastBullFractal, lastBearFractal, prevBearFractal); // BUY
+      RunSetup(true, sellState, lastBearFractal, lastBullFractal, prevBullFractal); // SELL
+   }
 }
 //+------------------------------------------------------------------+
 void UpdateAsianSession()
@@ -130,33 +138,42 @@ void DetectFractals()
 {
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   CopyRates(_Symbol, _Period, 0, 50, rates);
+   CopyRates(_Symbol, _Period, 0, 60, rates);
 
    lastBullFractal = FractalPoint();
    lastBearFractal = FractalPoint();
+   prevBullFractal = FractalPoint();
+   prevBearFractal = FractalPoint();
 
-   for (int i = 2; i < ArraySize(rates) - 2; i++)
+   FractalPoint bulls[2];
+   int bullCount = 0;
+   FractalPoint bears[2];
+   int bearCount = 0;
+
+   for (int i = 2; i < ArraySize(rates) - 2 && (bullCount < 2 || bearCount < 2); i++)
    {
-      if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
+      if (bullCount < 2 && rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
-         lastBullFractal.price = rates[i].low;
-         lastBullFractal.time  = rates[i].time;
-         break;
+         bulls[bullCount].price = rates[i].low;
+         bulls[bullCount].time  = rates[i].time;
+         bullCount++;
+      }
+      if (bearCount < 2 && rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
+      {
+         bears[bearCount].price = rates[i].high;
+         bears[bearCount].time  = rates[i].time;
+         bearCount++;
       }
    }
 
-   for (int i = 2; i < ArraySize(rates) - 2; i++)
-   {
-      if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
-      {
-         lastBearFractal.price = rates[i].high;
-         lastBearFractal.time  = rates[i].time;
-         break;
-      }
-   }
+   if (bullCount > 0) lastBullFractal = bulls[0];
+   if (bullCount > 1) prevBullFractal = bulls[1];
+   if (bearCount > 0) lastBearFractal = bears[0];
+   if (bearCount > 1) prevBearFractal = bears[1];
 
    if (EnableDebug)
-      Print("Fractals: Bull=", lastBullFractal.price, " Bear=", lastBearFractal.price);
+      Print("Fractals: Bull=", lastBullFractal.price, " PrevBull=", prevBullFractal.price,
+            " Bear=", lastBearFractal.price, " PrevBear=", prevBearFractal.price);
 }
 //+------------------------------------------------------------------+
 void DrawFractals()
@@ -174,7 +191,7 @@ void DrawLine(string name, double price, color clr)
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
 }
 //+------------------------------------------------------------------+
-void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, FractalPoint &bosFractal)
+void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, FractalPoint &bosFractal, FractalPoint &prevBosFractal)
 {
    string side = forSell ? "SELL" : "BUY";
    double high = iHigh(_Symbol, _Period, 0);
@@ -191,6 +208,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (swept)
       {
          state.sweepDetected = true;
+         state.slFractal = sweepFractal.price;
          state.legHigh = forSell ? high : state.legHigh;
          state.legLow  = !forSell ? low : state.legLow;
          if (EnableDebug) Print("🔻 ", side, " SWEEP detected.");
@@ -204,19 +222,27 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    {
       if (bosFractal.price <= 0.0) return;
 
+      double bosPrice = bosFractal.price;
+      if(prevBosFractal.price > 0)
+      {
+         if((forSell && bosPrice >= prevBosFractal.price) ||
+            (!forSell && bosPrice <= prevBosFractal.price))
+            bosPrice = prevBosFractal.price;
+      }
+
       bool bos = false;
       if (forSell)
       {
-         if (BOSConfirmType == WickOnly) bos = low < bosFractal.price;
-         else if (BOSConfirmType == BodyBreak) bos = close < bosFractal.price;
-         else bos = low < bosFractal.price || close < bosFractal.price;
+         if (BOSConfirmType == WickOnly) bos = low < bosPrice;
+         else if (BOSConfirmType == BodyBreak) bos = close < bosPrice;
+         else bos = low < bosPrice || close < bosPrice;
          if (bos) state.legLow = low;
       }
       else
       {
-         if (BOSConfirmType == WickOnly) bos = high > bosFractal.price;
-         else if (BOSConfirmType == BodyBreak) bos = close > bosFractal.price;
-         else bos = high > bosFractal.price || close > bosFractal.price;
+         if (BOSConfirmType == WickOnly) bos = high > bosPrice;
+         else if (BOSConfirmType == BodyBreak) bos = close > bosPrice;
+         else bos = high > bosPrice || close > bosPrice;
          if (bos) state.legHigh = high;
       }
 
@@ -247,7 +273,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       bool trigger = forSell ? (price >= entry) : (price <= entry);
       if (trigger)
       {
-         double sl = forSell ? sweepFractal.price + SLBufferPips * _Point : sweepFractal.price - SLBufferPips * _Point;
+         double sl = forSell ? state.slFractal + SLBufferPips * _Point : state.slFractal - SLBufferPips * _Point;
          double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entry - sl) / _Point);
          if (lot <= 0.0) return;
@@ -287,4 +313,17 @@ double CalculateLots(double slPips)
 
    double lots = MathFloor(rawLots / step) * step;
    return NormalizeDouble(MathMax(min, MathMin(max, lots)), 2);
+}
+
+bool HasOpenPosition()
+{
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(PositionGetInteger(POSITION_MAGIC)==MagicNumber &&
+         PositionGetString(POSITION_SYMBOL)==_Symbol)
+         return true;
+   }
+   return false;
 }
