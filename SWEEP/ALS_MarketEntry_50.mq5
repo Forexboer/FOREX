@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.17 – Market Entry on 50% Leg Touch (Improved)     |
+//|         ALS 1.17 – Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -34,6 +34,7 @@ input bool    EnableDebug             = true;
 
 //--- Globals
 CTrade trade;
+datetime glLastBarTime;
 int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
@@ -50,7 +51,6 @@ struct SetupState
    double legHigh;
    double legLow;
    double entryPrice;
-   double slAnchor; // fractal-based SL anchor
 };
 SetupState buyState, sellState;
 
@@ -58,6 +58,7 @@ SetupState buyState, sellState;
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
+   glLastBarTime = 0;
    ObjectsDeleteAll(0, "", 0);
    return INIT_SUCCEEDED;
 }
@@ -68,6 +69,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
    if (glLastProcessedDay != dt.day)
    {
@@ -175,7 +177,6 @@ void DrawLine(string name, double price, color clr)
 void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, FractalPoint &bosFractal)
 {
    string side = forSell ? "SELL" : "BUY";
-   double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
    double high = iHigh(_Symbol, _Period, 0);
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
@@ -192,7 +193,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.sweepDetected = true;
          state.legHigh = forSell ? high : state.legHigh;
          state.legLow  = !forSell ? low : state.legLow;
-         state.slAnchor = !forSell ? sweepFractal.price : sweepFractal.price; // SL komt van fractal vóór BOS
          if (EnableDebug) Print("🔻 ", side, " SWEEP detected.");
          if (ShowLines) DrawLine("SWEEP_" + side, forSell ? high : low, SweepColor);
       }
@@ -229,20 +229,25 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       return;
    }
 
-   // 3. Entry bij 50% touch
+   // 3. Na BOS: volg leg verder
    if (!state.entryTriggered && state.bosConfirmed)
    {
+        double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
       if (forSell && price < state.legLow) state.legLow = price;
       if (!forSell && price > state.legHigh) state.legHigh = price;
 
       double entry = (state.legHigh + state.legLow) / 2.0;
       state.entryPrice = entry;
-      if (ShowLines) DrawLine("ENTRY_" + side, entry, EntryLineColor);
 
+      // Visuele lijn
+      if (ShowLines)
+         DrawLine("ENTRY_" + side, entry, EntryLineColor);
+
+      // Als prijs de 50% raakt, plaats MARKET-order
       bool trigger = forSell ? (price >= entry) : (price <= entry);
       if (trigger)
       {
-         double sl = forSell ? state.slAnchor + SLBufferPips * _Point : state.slAnchor - SLBufferPips * _Point;
+         double sl = forSell ? sweepFractal.price + SLBufferPips * _Point : sweepFractal.price - SLBufferPips * _Point;
          double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entry - sl) / _Point);
          if (lot <= 0.0) return;
