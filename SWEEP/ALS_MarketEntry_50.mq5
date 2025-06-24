@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.17 – Market Entry on 50% Leg Touch                 |
+//|         ALS 1.17 – Market Entry on 50% Leg Touch (Improved)     |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -34,7 +34,6 @@ input bool    EnableDebug             = true;
 
 //--- Globals
 CTrade trade;
-datetime glLastBarTime;
 int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
@@ -42,7 +41,6 @@ bool asianBoxDrawn = false;
 
 struct FractalPoint { double price; datetime time; };
 FractalPoint lastBullFractal, lastBearFractal;
-FractalPoint prevBullFractal, prevBearFractal;
 
 struct SetupState
 {
@@ -52,9 +50,7 @@ struct SetupState
    double legHigh;
    double legLow;
    double entryPrice;
-   double slPrice;
-   double tpPrice;
-   ulong  positionTicket;
+   double slAnchor; // fractal-based SL anchor
 };
 SetupState buyState, sellState;
 
@@ -62,7 +58,6 @@ SetupState buyState, sellState;
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
-   glLastBarTime = 0;
    ObjectsDeleteAll(0, "", 0);
    return INIT_SUCCEEDED;
 }
@@ -73,7 +68,6 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
    if (glLastProcessedDay != dt.day)
    {
@@ -81,10 +75,6 @@ void OnTick()
       asianBoxDrawn = false;
       buyState = SetupState();
       sellState = SetupState();
-      lastBullFractal = FractalPoint();
-      lastBearFractal = FractalPoint();
-      prevBullFractal = FractalPoint();
-      prevBearFractal = FractalPoint();
       ObjectsDeleteAll(0, "", 0);
    }
 
@@ -140,15 +130,15 @@ void DetectFractals()
    ArraySetAsSeries(rates, true);
    CopyRates(_Symbol, _Period, 0, 50, rates);
 
-   FractalPoint newBull = FractalPoint();
-   FractalPoint newBear = FractalPoint();
+   lastBullFractal = FractalPoint();
+   lastBearFractal = FractalPoint();
 
    for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
       if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
-         newBull.price = rates[i].low;
-         newBull.time  = rates[i].time;
+         lastBullFractal.price = rates[i].low;
+         lastBullFractal.time  = rates[i].time;
          break;
       }
    }
@@ -157,27 +147,9 @@ void DetectFractals()
    {
       if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
-         newBear.price = rates[i].high;
-         newBear.time  = rates[i].time;
+         lastBearFractal.price = rates[i].high;
+         lastBearFractal.time  = rates[i].time;
          break;
-      }
-   }
-
-   if (newBull.price > 0 && newBull.time != lastBullFractal.time)
-   {
-      if (lastBullFractal.price == 0 || newBull.price < lastBullFractal.price)
-      {
-         prevBullFractal = lastBullFractal;
-         lastBullFractal = newBull;
-      }
-   }
-
-   if (newBear.price > 0 && newBear.time != lastBearFractal.time)
-   {
-      if (lastBearFractal.price == 0 || newBear.price > lastBearFractal.price)
-      {
-         prevBearFractal = lastBearFractal;
-         lastBearFractal = newBear;
       }
    }
 
@@ -203,6 +175,7 @@ void DrawLine(string name, double price, color clr)
 void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, FractalPoint &bosFractal)
 {
    string side = forSell ? "SELL" : "BUY";
+   double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
    double high = iHigh(_Symbol, _Period, 0);
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
@@ -219,6 +192,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.sweepDetected = true;
          state.legHigh = forSell ? high : state.legHigh;
          state.legLow  = !forSell ? low : state.legLow;
+         state.slAnchor = !forSell ? sweepFractal.price : sweepFractal.price; // SL komt van fractal vóór BOS
          if (EnableDebug) Print("🔻 ", side, " SWEEP detected.");
          if (ShowLines) DrawLine("SWEEP_" + side, forSell ? high : low, SweepColor);
       }
@@ -236,22 +210,14 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (BOSConfirmType == WickOnly) bos = low < bosFractal.price;
          else if (BOSConfirmType == BodyBreak) bos = close < bosFractal.price;
          else bos = low < bosFractal.price || close < bosFractal.price;
-         if (bos)
-         {
-            state.legLow = low;
-            state.slPrice = bosFractal.price + SLBufferPips * _Point;
-         }
+         if (bos) state.legLow = low;
       }
       else
       {
          if (BOSConfirmType == WickOnly) bos = high > bosFractal.price;
          else if (BOSConfirmType == BodyBreak) bos = close > bosFractal.price;
          else bos = high > bosFractal.price || close > bosFractal.price;
-         if (bos)
-         {
-            state.legHigh = high;
-            state.slPrice = bosFractal.price - SLBufferPips * _Point;
-         }
+         if (bos) state.legHigh = high;
       }
 
       if (bos)
@@ -263,53 +229,33 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       return;
    }
 
-   // 3. Na BOS: volg leg verder
-   if (state.bosConfirmed)
+   // 3. Entry bij 50% touch
+   if (!state.entryTriggered && state.bosConfirmed)
    {
-      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
       if (forSell && price < state.legLow) state.legLow = price;
       if (!forSell && price > state.legHigh) state.legHigh = price;
 
       double entry = (state.legHigh + state.legLow) / 2.0;
-      double tp = forSell ? entry - (state.slPrice - entry) * RiskRewardRatio
-                          : entry + (entry - state.slPrice) * RiskRewardRatio;
+      state.entryPrice = entry;
+      if (ShowLines) DrawLine("ENTRY_" + side, entry, EntryLineColor);
 
-      if (!state.entryTriggered)
+      bool trigger = forSell ? (price >= entry) : (price <= entry);
+      if (trigger)
       {
-         state.entryPrice = entry;
-         if (ShowLines)
-            DrawLine("ENTRY_" + side, entry, EntryLineColor);
+         double sl = forSell ? state.slAnchor + SLBufferPips * _Point : state.slAnchor - SLBufferPips * _Point;
+         double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
+         double lot = CalculateLots(MathAbs(entry - sl) / _Point);
+         if (lot <= 0.0) return;
 
-         bool trigger = forSell ? (price >= entry) : (price <= entry);
-         if (trigger)
+         bool sent = forSell
+            ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
+            : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
+
+         if (sent)
          {
-            double lot = CalculateLots(MathAbs(entry - state.slPrice) / _Point);
-            if (lot <= 0.0) return;
-
-            bool sent = forSell
-               ? trade.Sell(lot, _Symbol, 0, state.slPrice, tp, "ALS_17_SELL")
-               : trade.Buy(lot, _Symbol, 0, state.slPrice, tp, "ALS_17_BUY");
-
-            if (sent)
-            {
-               state.entryTriggered = true;
-               state.tpPrice = tp;
-               state.positionTicket = trade.ResultOrder();
-               if (EnableDebug)
-                  Print("📥 ", side, " MARKET order at ", entry, " SL=", state.slPrice, " TP=", tp, " Lot=", lot);
-            }
-         }
-      }
-      else
-      {
-         if (MathAbs(tp - state.tpPrice) >= _Point)
-         {
-            if (trade.PositionModify(_Symbol, state.slPrice, tp))
-            {
-               state.tpPrice = tp;
-               if (EnableDebug)
-                  Print("🔄 ", side, " TP adjusted to ", tp);
-            }
+            state.entryTriggered = true;
+            if (EnableDebug)
+               Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
       }
    }
