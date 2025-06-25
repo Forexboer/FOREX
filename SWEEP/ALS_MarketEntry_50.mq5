@@ -192,6 +192,13 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
+   // Tijdens een actieve setup blijft de leg lopen
+   if (state.sweepDetected && !state.bosConfirmed)
+   {
+      if (forSell && high > state.legHigh)  state.legHigh = high;
+      if (!forSell && low  < state.legLow)  state.legLow  = low;
+   }
+
    // 1. Sweep detectie
    if (!state.sweepDetected)
    {
