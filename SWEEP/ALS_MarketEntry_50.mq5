@@ -192,17 +192,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
-   // Only allow one direction to be active at a time
-   if (forSell && buyState.entryTriggered) return;
-   if (!forSell && sellState.entryTriggered) return;
-
-   // Tijdens een actieve setup blijft de leg lopen
-   if (state.sweepDetected && !state.bosConfirmed)
-   {
-      if (forSell && high > state.legHigh)  state.legHigh = high;
-      if (!forSell && low  < state.legLow)  state.legLow  = low;
-   }
-
    // 1. Sweep detectie
    if (!state.sweepDetected)
    {
@@ -267,24 +256,24 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (forSell && price < state.legLow) state.legLow = price;
       if (!forSell && price > state.legHigh) state.legHigh = price;
 
-      double entryPrice = (state.legHigh + state.legLow) / 2.0;
-      state.entryPrice = entryPrice;
+      double entry = (state.legHigh + state.legLow) / 2.0;
+      state.entryPrice = entry;
 
       // Visuele lijn
       if (ShowLines)
-         DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
+         DrawLine("ENTRY_" + side, entry, EntryLineColor);
 
       // Als prijs de 50% raakt, plaats MARKET-order
-      bool trigger = forSell ? (price >= entryPrice) : (price <= entryPrice);
+      bool trigger = forSell ? (price >= entry) : (price <= entry);
       if (trigger)
       {
          double sl;
          if(forSell)
-            sl = state.bosFractalPrice + SLBufferPips * _Point;
+            sl = sweepFractal.price + SLBufferPips * _Point;
          else
-            sl = state.bosFractalPrice - SLBufferPips * _Point;
-         double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
-         double lot = CalculateLots(MathAbs(entryPrice - sl) / _Point);
+            sl = sweepFractal.price - SLBufferPips * _Point;
+         double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
+         double lot = CalculateLots(MathAbs(entry - sl) / _Point);
          if (lot <= 0.0) return;
 
          bool sent = forSell
@@ -295,7 +284,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          {
             state.entryTriggered = true;
             if (EnableDebug)
-               Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
+               Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
       }
    }
@@ -322,28 +311,4 @@ double CalculateLots(double slPips)
 
    double lots = MathFloor(rawLots / step) * step;
    return NormalizeDouble(MathMax(min, MathMin(max, lots)), 2);
-}
-
-//+------------------------------------------------------------------+
-//| Calculate lot size from a stop price                              |
-//+------------------------------------------------------------------+
-double CalculateLotsFromPrice(double stopLossPrice,
-                              ENUM_ORDER_TYPE orderType,
-                              double ask = 0.0,
-                              double bid = 0.0)
-{
-   if(ask == 0.0) ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   if(bid == 0.0) bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-   double slDistance;
-   if(orderType == ORDER_TYPE_BUY)
-      slDistance = ask - stopLossPrice;
-   else if(orderType == ORDER_TYPE_SELL)
-      slDistance = stopLossPrice - bid;
-   else
-      return SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-
-   slDistance = MathAbs(slDistance) + SLBufferPips * _Point;
-   double slPips = slDistance / _Point;
-   return CalculateLots(slPips);
 }
