@@ -215,6 +215,13 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    {
       if (bosFractal.price <= 0.0) return;
 
+      // BOS fractal must exist prior to the swept fractal
+      if (bosFractal.time > sweepFractal.time)
+      {
+         if (EnableDebug) Print("\xF0\x9F\x9A\xAB Ongeldige BOS fractal \xE2\x80\x93 tegenovergestelde fractal niet uitgenomen.");
+         return;
+      }
+
       bool bos = false;
       if (forSell)
       {
