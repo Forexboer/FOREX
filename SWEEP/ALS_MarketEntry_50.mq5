@@ -14,7 +14,6 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 2.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
-input int     MaxSetupsPerDay        = 2;    // maximum number of setups allowed per day
 
 sinput group "Fractals & BOS"
 input int     FractalLookback         = 3;
@@ -40,7 +39,6 @@ int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
-int setupsToday = 0;           // counter for executed setups per day
 
 struct FractalPoint
 {
@@ -69,7 +67,6 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    glLastBarTime = 0;
    ObjectsDeleteAll(0, "", 0);
-   setupsToday = 0;
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason)
@@ -88,14 +85,10 @@ void OnTick()
       buyState = SetupState();
       sellState = SetupState();
       ObjectsDeleteAll(0, "", 0);
-      setupsToday = 0; // reset counter at start of new day
    }
 
    UpdateAsianSession();
    if (!asianBoxDrawn) return;
-
-   if (setupsToday >= MaxSetupsPerDay)
-      return; // daily limit reached, skip further processing
 
    DetectFractals();
    if (ShowFractals) DrawFractals();
@@ -292,9 +285,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
             state.entryTriggered = true;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
-            setupsToday++;
-            if (setupsToday < MaxSetupsPerDay)
-               state = SetupState(); // reset for potential additional setups
          }
       }
    }
