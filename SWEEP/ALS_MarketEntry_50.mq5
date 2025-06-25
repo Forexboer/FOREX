@@ -40,7 +40,13 @@ datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
 
-struct FractalPoint { double price; datetime time; };
+struct FractalPoint
+{
+   double price;    // extreme value of the fractal
+   double high;     // candle high
+   double low;      // candle low
+   datetime time;
+};
 FractalPoint lastBullFractal, lastBearFractal;
 
 struct SetupState
@@ -51,6 +57,7 @@ struct SetupState
    double legHigh;
    double legLow;
    double entryPrice;
+   double bosFractalPrice; // price of the fractal that confirmed BOS
 };
 SetupState buyState, sellState;
 
@@ -140,6 +147,8 @@ void DetectFractals()
       if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
          lastBullFractal.price = rates[i].low;
+         lastBullFractal.high  = rates[i].high;
+         lastBullFractal.low   = rates[i].low;
          lastBullFractal.time  = rates[i].time;
          break;
       }
@@ -150,6 +159,8 @@ void DetectFractals()
       if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
          lastBearFractal.price = rates[i].high;
+         lastBearFractal.high  = rates[i].high;
+         lastBearFractal.low   = rates[i].low;
          lastBearFractal.time  = rates[i].time;
          break;
       }
@@ -223,6 +234,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (bos)
       {
          state.bosConfirmed = true;
+         // store SL reference from BOS fractal (high for sell, low for buy)
+         state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
          if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
@@ -247,7 +260,11 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       bool trigger = forSell ? (price >= entry) : (price <= entry);
       if (trigger)
       {
-         double sl = forSell ? sweepFractal.price + SLBufferPips * _Point : sweepFractal.price - SLBufferPips * _Point;
+         double sl;
+         if(forSell)
+            sl = state.bosFractalPrice + SLBufferPips * _Point; // use BOS fractal for sell SL
+         else
+            sl = sweepFractal.price - SLBufferPips * _Point;
          double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entry - sl) / _Point);
          if (lot <= 0.0) return;
