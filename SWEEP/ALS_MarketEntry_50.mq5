@@ -319,3 +319,27 @@ double CalculateLots(double slPips)
    double lots = MathFloor(rawLots / step) * step;
    return NormalizeDouble(MathMax(min, MathMin(max, lots)), 2);
 }
+
+//+------------------------------------------------------------------+
+//| Calculate lot size from a stop price                              |
+//+------------------------------------------------------------------+
+double CalculateLotsFromPrice(double stopLossPrice,
+                              ENUM_ORDER_TYPE orderType,
+                              double ask = 0.0,
+                              double bid = 0.0)
+{
+   if(ask == 0.0) ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid == 0.0) bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   double slDistance;
+   if(orderType == ORDER_TYPE_BUY)
+      slDistance = ask - stopLossPrice;
+   else if(orderType == ORDER_TYPE_SELL)
+      slDistance = stopLossPrice - bid;
+   else
+      return SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+
+   slDistance = MathAbs(slDistance) + SLBufferPips * _Point;
+   double slPips = slDistance / _Point;
+   return CalculateLots(slPips);
+}
