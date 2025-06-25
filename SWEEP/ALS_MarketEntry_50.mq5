@@ -243,6 +243,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.bosConfirmed = true;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
+         state.entryPrice = (state.legHigh + state.legLow) / 2.0;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
          if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
@@ -252,12 +253,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    // 3. Na BOS: volg leg verder
    if (!state.entryTriggered && state.bosConfirmed)
    {
-        double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
-      if (forSell && price < state.legLow) state.legLow = price;
-      if (!forSell && price > state.legHigh) state.legHigh = price;
-
-      double entry = (state.legHigh + state.legLow) / 2.0;
-      state.entryPrice = entry;
+      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      double entry = state.entryPrice;
 
       // Visuele lijn
       if (ShowLines)
