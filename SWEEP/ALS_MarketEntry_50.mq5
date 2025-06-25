@@ -35,7 +35,8 @@ input bool    EnableDebug             = true;
 //--- Globals
 CTrade trade;
 datetime glLastBarTime;
-int glLastProcessedDay = -1;
+int      glLastProcessedDate = -1; // format YYYYMMDD
+datetime glDayStart         = 0;  // start of current day
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
@@ -78,13 +79,21 @@ void OnTick()
 {
 
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   if (glLastProcessedDay != dt.day)
+   int dayNum = dt.year * 10000 + dt.mon * 100 + dt.day;
+   if (glLastProcessedDate != dayNum)
    {
-      glLastProcessedDay = dt.day;
+      glLastProcessedDate = dayNum;
+      glDayStart = (datetime)((TimeCurrent() / 86400) * 86400);
+
       asianBoxDrawn = false;
       buyState = SetupState();
       sellState = SetupState();
+      lastBullFractal = FractalPoint();
+      lastBearFractal = FractalPoint();
+
       ObjectsDeleteAll(0, "", 0);
+      if (EnableDebug)
+         Print("\xF0\x9F\x93\x84 New trading day detected: ", dayNum);
    }
 
    UpdateAsianSession();
@@ -144,6 +153,7 @@ void DetectFractals()
 
    for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
+      if (rates[i].time < glDayStart) continue;
       if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
          lastBullFractal.price = rates[i].low;
@@ -156,6 +166,7 @@ void DetectFractals()
 
    for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
+      if (rates[i].time < glDayStart) continue;
       if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
          lastBearFractal.price = rates[i].high;
@@ -167,7 +178,8 @@ void DetectFractals()
    }
 
    if (EnableDebug)
-      Print("Fractals: Bull=", lastBullFractal.price, " Bear=", lastBearFractal.price);
+      Print("Fractals: Bull=", lastBullFractal.price, " at ", TimeToString(lastBullFractal.time, TIME_DATE|TIME_MINUTES),
+            " Bear=", lastBearFractal.price, " at ", TimeToString(lastBearFractal.time, TIME_DATE|TIME_MINUTES));
 }
 //+------------------------------------------------------------------+
 void DrawFractals()
