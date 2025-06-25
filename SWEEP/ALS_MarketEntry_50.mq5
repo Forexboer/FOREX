@@ -192,6 +192,10 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
+   // Only allow one direction to be active at a time
+   if (forSell && buyState.entryTriggered) return;
+   if (!forSell && sellState.entryTriggered) return;
+
    // Tijdens een actieve setup blijft de leg lopen
    if (state.sweepDetected && !state.bosConfirmed)
    {
