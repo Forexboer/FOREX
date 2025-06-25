@@ -269,7 +269,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       {
          double sl;
          if(forSell)
-            sl = state.bosFractalPrice + SLBufferPips * _Point; // use BOS fractal for sell SL
+            sl = sweepFractal.price + SLBufferPips * _Point;
          else
             sl = sweepFractal.price - SLBufferPips * _Point;
          double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
