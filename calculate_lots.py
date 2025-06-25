@@ -92,3 +92,54 @@ def CalculateLots(sl_pips, risk_percent=1.0):
     if lots > max_lot:
         return max_lot
     return lots
+
+
+ORDER_TYPE_BUY = 0
+"""Constant representing a buy order."""
+
+ORDER_TYPE_SELL = 1
+"""Constant representing a sell order."""
+
+
+def CalculateLotsFromPrice(
+    stop_loss_price,
+    order_type,
+    ask,
+    bid,
+    risk_percent=1.0,
+    buffer_pips=0.0,
+):
+    """Calculate position size from a stop price and current market prices.
+
+    Parameters
+    ----------
+    stop_loss_price : float
+        Price level of the stop loss.
+    order_type : int
+        ``ORDER_TYPE_BUY`` or ``ORDER_TYPE_SELL``.
+    ask : float
+        Current ask price of the symbol.
+    bid : float
+        Current bid price of the symbol.
+    risk_percent : float, optional
+        Percentage of the account balance to risk, default ``1.0``.
+    buffer_pips : float, optional
+        Additional pips added to the stop distance, default ``0.0``.
+
+    Returns
+    -------
+    float
+        Recommended lot size calculated from the price based stop distance.
+    """
+
+    if order_type == ORDER_TYPE_BUY:
+        sl_distance_price = ask - stop_loss_price
+    elif order_type == ORDER_TYPE_SELL:
+        sl_distance_price = stop_loss_price - bid
+    else:
+        raise ValueError("invalid order type")
+
+    sl_distance_price = abs(sl_distance_price) + buffer_pips * _Point
+    sl_pips = sl_distance_price / _Point
+    return CalculateLots(sl_pips, risk_percent)
+

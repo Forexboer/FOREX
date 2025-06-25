@@ -103,5 +103,27 @@ class TestCalculateLots(unittest.TestCase):
 
         self.assertEqual(cl.CalculateLots(1000), cl.DEFAULT_LOT)
 
+    @patch('calculate_lots.AccountInfoDouble')
+    @patch('calculate_lots.SymbolInfoDouble')
+    def test_calculate_lots_from_price(self, mock_symbol, mock_account):
+        mock_account.side_effect = self.fake_account_info
+        mock_symbol.side_effect = self.fake_symbol_info
+
+        lots = cl.CalculateLotsFromPrice(
+            stop_loss_price=1.0950,
+            order_type=cl.ORDER_TYPE_BUY,
+            ask=1.1000,
+            bid=1.0995,
+        )
+        self.assertEqual(lots, 1.0)
+
+        lots = cl.CalculateLotsFromPrice(
+            stop_loss_price=1.1220,
+            order_type=cl.ORDER_TYPE_SELL,
+            ask=1.1002,
+            bid=1.1000,
+        )
+        self.assertEqual(lots, 0.45)
+
 if __name__ == '__main__':
     unittest.main()
