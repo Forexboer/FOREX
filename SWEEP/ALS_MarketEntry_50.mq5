@@ -305,6 +305,3 @@ double CalculateLots(double slPips)
    double lots = MathFloor(rawLots / step) * step;
    return NormalizeDouble(MathMax(min, MathMin(max, lots)), 2);
 }
-   }
-   return false;
-}
