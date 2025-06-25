@@ -276,9 +276,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       {
          double sl;
          if(forSell)
-            sl = sweepFractal.price + SLBufferPips * _Point;
+            sl = state.bosFractalPrice + SLBufferPips * _Point;
          else
-            sl = sweepFractal.price - SLBufferPips * _Point;
+            sl = state.bosFractalPrice - SLBufferPips * _Point;
          double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entryPrice - sl) / _Point);
          if (lot <= 0.0) return;
