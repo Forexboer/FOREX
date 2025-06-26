@@ -54,6 +54,7 @@ struct SetupState
    bool sweepDetected;
    bool bosConfirmed;
    bool entryTriggered;
+   bool entryReady;    // price moved beyond entry level, waiting for retrace
    double legHigh;
    double legLow;
    double entryPrice;
@@ -252,7 +253,10 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    // 3. Na BOS: volg leg verder
    if (!state.entryTriggered && state.bosConfirmed)
    {
-        double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double price = forSell ? bid : ask;
+
       if (forSell && price < state.legLow) state.legLow = price;
       if (!forSell && price > state.legHigh) state.legHigh = price;
 
@@ -263,8 +267,17 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (ShowLines)
          DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
 
-      // Als prijs de 50% raakt, plaats MARKET-order
-      bool trigger = forSell ? (price >= entryPrice) : (price <= entryPrice);
+      // Wacht op pullback nadat prijs voorbij de entry-lijn is geweest
+      if (!state.entryReady)
+      {
+         if (forSell && price < entryPrice) state.entryReady = true;
+         if (!forSell && price > entryPrice) state.entryReady = true;
+      }
+
+      bool trigger = false;
+      if (state.entryReady)
+         trigger = forSell ? (bid >= entryPrice) : (ask <= entryPrice);
+
       if (trigger)
       {
          double sl;
