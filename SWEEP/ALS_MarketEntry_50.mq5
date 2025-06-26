@@ -14,11 +14,9 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 2.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
-input int     MaxOpenPositions        = 1;   // limit concurrent trades
 
 sinput group "Fractals & BOS"
 input int     FractalLookback         = 3;
-input int     FractalWindowBars       = 100;  // amount of bars used for fractal search
 enum ENUM_CONFIRM_TYPE { WickOnly, BodyBreak, Either };
 input ENUM_CONFIRM_TYPE BOSConfirmType = Either;
 
@@ -37,7 +35,7 @@ input bool    EnableDebug             = true;
 //--- Globals
 CTrade trade;
 datetime glLastBarTime;
-int glLastProcessedDate = -1;  // stored as YYYYMMDD
+int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
@@ -65,35 +63,12 @@ struct SetupState
 };
 SetupState buyState, sellState;
 
-// helper to reset all tracking flags for a new setup
-void ResetSetupState(SetupState &state)
-{
-   state = SetupState();
-}
-
-// check if there is an active position for this expert
-bool HasOpenPosition()
-{
-   for(int i=0;i<PositionsTotal();i++)
-   {
-      if(PositionGetTicket(i))
-      {
-         if(PositionGetString(POSITION_SYMBOL)==_Symbol &&
-            PositionGetInteger(POSITION_MAGIC)==MagicNumber)
-            return true;
-      }
-   }
-   return false;
-}
-
 //+------------------------------------------------------------------+
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
    glLastBarTime = 0;
    ObjectsDeleteAll(0, "", 0);
-   ResetSetupState(buyState);
-   ResetSetupState(sellState);
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason)
@@ -105,13 +80,12 @@ void OnTick()
 {
 
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   int currentDate = dt.year * 10000 + dt.mon * 100 + dt.day; // full date
-   if (glLastProcessedDate != currentDate)   // daily reset
+   if (glLastProcessedDay != dt.day)
    {
-      glLastProcessedDate = currentDate;
+      glLastProcessedDay = dt.day;
       asianBoxDrawn = false;
-      ResetSetupState(buyState);
-      ResetSetupState(sellState);
+      buyState = SetupState();
+      sellState = SetupState();
       ObjectsDeleteAll(0, "", 0);
    }
 
@@ -165,20 +139,14 @@ void DetectFractals()
 {
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   // use a larger history window so older BOS fractals remain accessible
-   int bars = MathMax(FractalWindowBars, FractalLookback * 2 + 10);
-   CopyRates(_Symbol, _Period, 0, bars, rates);
+   CopyRates(_Symbol, _Period, 0, 50, rates);
 
    lastBullFractal = FractalPoint();
    lastBearFractal = FractalPoint();
 
-   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
+   for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
-      bool bull = true;
-      for(int j=1;j<=FractalLookback && bull;j++)
-         if(rates[i].low >= rates[i-j].low || rates[i].low >= rates[i+j].low)
-            bull=false;
-      if(bull)
+      if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
          lastBullFractal.price = rates[i].low;
          lastBullFractal.high  = rates[i].high;
@@ -188,13 +156,9 @@ void DetectFractals()
       }
    }
 
-   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
+   for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
-      bool bear = true;
-      for(int j=1;j<=FractalLookback && bear;j++)
-         if(rates[i].high <= rates[i-j].high || rates[i].high <= rates[i+j].high)
-            bear=false;
-      if(bear)
+      if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
          lastBearFractal.price = rates[i].high;
          lastBearFractal.high  = rates[i].high;
@@ -230,22 +194,13 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
-   // reset state if trade closed
-   if(state.entryTriggered)
-   {
-      if(!HasOpenPosition())
-         ResetSetupState(state);
-      else
-         return; // keep monitoring but skip new setups
-   }
-
    // 1. Sweep detectie
-   bool swept = forSell
-      ? (high > asianHigh && sweepFractal.price > 0 && high >= sweepFractal.price)
-      : (low < asianLow && sweepFractal.price > 0 && low <= sweepFractal.price);
-
-   if(!state.sweepDetected)
+   if (!state.sweepDetected)
    {
+      bool swept = forSell
+         ? (high > asianHigh && sweepFractal.price > 0 && high >= sweepFractal.price)
+         : (low < asianLow && sweepFractal.price > 0 && low <= sweepFractal.price);
+
       if (swept)
       {
          state.sweepDetected = true;
@@ -254,16 +209,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (EnableDebug) Print("🔻 ", side, " SWEEP detected.");
          if (ShowLines) DrawLine("SWEEP_" + side, forSell ? high : low, SweepColor);
       }
-      return;
-   }
-   else if(swept)
-   {
-      ResetSetupState(state);
-      state.sweepDetected = true;
-      state.legHigh = forSell ? high : state.legHigh;
-      state.legLow  = !forSell ? low : state.legLow;
-      if (EnableDebug) Print("🔄 ", side, " nieuwe SWEEP detected.");
-      if (ShowLines) DrawLine("SWEEP_" + side, forSell ? high : low, SweepColor);
       return;
    }
 
@@ -339,12 +284,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
       if (trigger)
       {
-         if(PositionsTotal() >= MaxOpenPositions)
-         {
-            // prevent new trades when too many positions are open
-            if (EnableDebug) Print("\xE2\x9A\xA0 Max open positions reached");
-            return;
-         }
          double sl;
          if(forSell)
             sl = state.lockedFractalForSL + SLBufferPips * _Point;
@@ -358,18 +297,11 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
             ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
             : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
 
-         if (sent && trade.ResultRetcode() == TRADE_RETCODE_DONE)
+         if (sent)
          {
             state.entryTriggered = true;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
-         }
-         else
-         {
-            if (EnableDebug)
-               // log failure so the state can recover
-               Print("\xF0\x9F\x9A\xAB Order failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
-            ResetSetupState(state);
          }
       }
    }
