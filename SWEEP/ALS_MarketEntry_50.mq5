@@ -68,6 +68,24 @@ struct SetupState
 };
 SetupState buyState, sellState;
 
+//--- Utility: compute day of year for compatibility with older terminals
+int GetDayOfYear(datetime time_val)
+{
+   MqlDateTime dt;
+   TimeToStruct(time_val, dt);
+
+   MqlDateTime jan1;
+   jan1.year = dt.year;
+   jan1.mon  = 1;
+   jan1.day  = 1;
+   jan1.hour = 0;
+   jan1.min  = 0;
+   jan1.sec  = 0;
+
+   datetime start = StructToTime(jan1);
+   return int((time_val - start) / 86400);
+}
+
 //+------------------------------------------------------------------+
 int OnInit()
 {
@@ -93,7 +111,7 @@ void OnTick()
       sellState = SetupState();
       ObjectsDeleteAll(0, "", 0);
    }
-   int dayOfYear = TimeDayOfYear(TimeCurrent());
+   int dayOfYear = GetDayOfYear(TimeCurrent());
    if (glTradeDayOfYear != dayOfYear)
    {
       glTradeDayOfYear = dayOfYear;
