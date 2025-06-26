@@ -59,6 +59,7 @@ struct SetupState
    double legLow;
    double entryPrice;
    double bosFractalPrice; // price of the fractal that confirmed BOS
+   double lockedFractalForSL; // fractal used to place stop loss
 };
 SetupState buyState, sellState;
 
@@ -244,6 +245,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.bosConfirmed = true;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
+         // lock fractal for stop loss based on last fractal before BOS
+         if(state.lockedFractalForSL == 0.0)
+            state.lockedFractalForSL = sweepFractal.price;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
          if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
@@ -282,9 +286,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       {
          double sl;
          if(forSell)
-            sl = sweepFractal.price + SLBufferPips * _Point;
+            sl = state.lockedFractalForSL + SLBufferPips * _Point;
          else
-            sl = sweepFractal.price - SLBufferPips * _Point;
+            sl = state.lockedFractalForSL - SLBufferPips * _Point;
          double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entryPrice - sl) / _Point);
          if (lot <= 0.0) return;
