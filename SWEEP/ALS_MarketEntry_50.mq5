@@ -243,7 +243,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.bosConfirmed = true;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
-         state.entryPrice = (state.legHigh + state.legLow) / 2.0;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
          if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
@@ -253,15 +252,19 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    // 3. Na BOS: volg leg verder
    if (!state.entryTriggered && state.bosConfirmed)
    {
-      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
-      double entry = state.entryPrice;
+        double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      if (forSell && price < state.legLow) state.legLow = price;
+      if (!forSell && price > state.legHigh) state.legHigh = price;
+
+      double entryPrice = (state.legHigh + state.legLow) / 2.0;
+      state.entryPrice = entryPrice;
 
       // Visuele lijn
       if (ShowLines)
-         DrawLine("ENTRY_" + side, entry, EntryLineColor);
+         DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
 
       // Als prijs de 50% raakt, plaats MARKET-order
-      bool trigger = forSell ? (price >= entry) : (price <= entry);
+      bool trigger = forSell ? (price >= entryPrice) : (price <= entryPrice);
       if (trigger)
       {
          double sl;
@@ -269,8 +272,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
             sl = sweepFractal.price + SLBufferPips * _Point;
          else
             sl = sweepFractal.price - SLBufferPips * _Point;
-         double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
-         double lot = CalculateLots(MathAbs(entry - sl) / _Point);
+         double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
+         double lot = CalculateLots(MathAbs(entryPrice - sl) / _Point);
          if (lot <= 0.0) return;
 
          bool sent = forSell
@@ -281,7 +284,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          {
             state.entryTriggered = true;
             if (EnableDebug)
-               Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
+               Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
       }
    }
