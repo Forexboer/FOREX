@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.34– Market Entry on 50% Leg Touch                 |
+//|         ALS 1.38– Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
