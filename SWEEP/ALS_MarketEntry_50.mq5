@@ -40,6 +40,30 @@ datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
 
+bool PositionExists(bool forSell)
+{
+   if(!PositionSelect(_Symbol))
+      return false;
+
+   ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   if(forSell && type == POSITION_TYPE_SELL)
+      return true;
+   if(!forSell && type == POSITION_TYPE_BUY)
+      return true;
+   return false;
+}
+
+void ResetSetup(SetupState &state, string side)
+{
+   state = SetupState();
+   if(ShowLines)
+   {
+      ObjectDelete(0, "SWEEP_" + side);
+      ObjectDelete(0, "BOS_" + side);
+      ObjectDelete(0, "ENTRY_" + side);
+   }
+}
+
 struct FractalPoint
 {
    double price;    // extreme value of the fractal
@@ -58,6 +82,8 @@ struct SetupState
    double legLow;
    double entryPrice;
    double bosFractalPrice; // price of the fractal that confirmed BOS
+   datetime sweepFractalTime; // time of fractal used for sweep detection
+   datetime bosFractalTime;   // time of fractal that confirmed BOS
 };
 SetupState buyState, sellState;
 
@@ -82,10 +108,15 @@ void OnTick()
    {
       glLastProcessedDay = dt.day;
       asianBoxDrawn = false;
-      buyState = SetupState();
-      sellState = SetupState();
+      ResetSetup(buyState, "BUY");
+      ResetSetup(sellState, "SELL");
       ObjectsDeleteAll(0, "", 0);
    }
+
+   if(buyState.entryTriggered && !PositionExists(false))
+      ResetSetup(buyState, "BUY");
+   if(sellState.entryTriggered && !PositionExists(true))
+      ResetSetup(sellState, "SELL");
 
    UpdateAsianSession();
    if (!asianBoxDrawn) return;
@@ -192,9 +223,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
-   // Only allow one direction to be active at a time
-   if (forSell && buyState.entryTriggered) return;
-   if (!forSell && sellState.entryTriggered) return;
+   // skip setup if an opposite position exists
+   if(PositionExists(!forSell))
+      return;
 
    // Tijdens een actieve setup blijft de leg lopen
    if (state.sweepDetected && !state.bosConfirmed)
@@ -213,6 +244,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (swept)
       {
          state.sweepDetected = true;
+         state.sweepFractalTime = sweepFractal.time;
          state.legHigh = forSell ? high : state.legHigh;
          state.legLow  = !forSell ? low : state.legLow;
          if (EnableDebug) Print("🔻 ", side, " SWEEP detected.");
@@ -226,8 +258,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    {
       if (bosFractal.price <= 0.0) return;
 
-      // BOS fractal must exist prior to the swept fractal
-      if (bosFractal.time > sweepFractal.time)
+      // BOS fractal must exist prior to the swept fractal used for detection
+      if (bosFractal.time > state.sweepFractalTime)
       {
          if (EnableDebug) Print("\xF0\x9F\x9A\xAB Ongeldige BOS fractal \xE2\x80\x93 tegenovergestelde fractal niet uitgenomen.");
          return;
@@ -254,6 +286,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.bosConfirmed = true;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
+         state.bosFractalTime  = bosFractal.time;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
          if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
