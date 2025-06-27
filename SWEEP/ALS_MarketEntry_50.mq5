@@ -60,6 +60,7 @@ struct SetupState
    double entryPrice;
    double bosFractalPrice; // price of the fractal that confirmed BOS
    double lockedFractalForSL; // fractal used to place stop loss
+   ulong  orderTicket;        // ticket of the pending limit order
 };
 SetupState buyState, sellState;
 
@@ -82,6 +83,12 @@ void OnTick()
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
    if (glLastProcessedDay != dt.day)
    {
+      // Clean up any pending orders from previous day
+      if(buyState.orderTicket > 0)
+         trade.OrderDelete(buyState.orderTicket);
+      if(sellState.orderTicket > 0)
+         trade.OrderDelete(sellState.orderTicket);
+
       glLastProcessedDay = dt.day;
       asianBoxDrawn = false;
       buyState = SetupState();
@@ -272,17 +279,15 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
 
       // Wacht op pullback nadat prijs voorbij de entry-lijn is geweest
+      bool prevReady = state.entryReady;
       if (!state.entryReady)
       {
          if (forSell && price < entryPrice) state.entryReady = true;
          if (!forSell && price > entryPrice) state.entryReady = true;
       }
 
-      bool trigger = false;
-      if (state.entryReady)
-         trigger = forSell ? (bid >= entryPrice) : (ask <= entryPrice);
-
-      if (trigger)
+      // Plaats een limit order zodra de setup gereed is
+      if (state.entryReady && !prevReady && state.orderTicket == 0)
       {
          double sl;
          if(forSell)
@@ -294,14 +299,52 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (lot <= 0.0) return;
 
          bool sent = forSell
-            ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
-            : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
+            ? trade.SellLimit(lot, entryPrice, _Symbol, sl, tp, "ALS_17_SELL")
+            : trade.BuyLimit(lot, entryPrice, _Symbol, sl, tp, "ALS_17_BUY");
 
          if (sent)
          {
-            state.entryTriggered = true;
+            state.orderTicket = trade.ResultOrder();
             if (EnableDebug)
-               Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
+               Print("📥 ", side, " LIMIT order placed at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
+         }
+      }
+
+      // Update bestaande limit order zolang deze niet gevuld is
+      if (state.orderTicket > 0 && !state.entryTriggered)
+      {
+         if(OrderSelect(state.orderTicket, SELECT_BY_TICKET))
+         {
+            long ordState = OrderGetInteger(ORDER_STATE);
+            if(ordState == ORDER_STATE_PLACED || ordState == ORDER_STATE_STARTED)
+            {
+               double currentPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+               if(MathAbs(currentPrice - entryPrice) > _Point)
+               {
+                  double sl = forSell ? state.lockedFractalForSL + SLBufferPips * _Point : state.lockedFractalForSL - SLBufferPips * _Point;
+                  double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
+                  trade.OrderModify(state.orderTicket, entryPrice, sl, tp);
+               }
+            }
+            else if(ordState == ORDER_STATE_FILLED)
+            {
+               state.entryTriggered = true;
+               state.orderTicket = 0;
+            }
+         }
+
+         // Controleer of positie geopend is
+         for(int i=0;i<PositionsTotal();i++)
+         {
+            if(PositionSelectByTicket(PositionGetTicket(i)))
+            {
+               if(PositionGetInteger(POSITION_MAGIC)==MagicNumber && PositionGetString(POSITION_SYMBOL)==_Symbol && PositionGetInteger(POSITION_TYPE)==(forSell?POSITION_TYPE_SELL:POSITION_TYPE_BUY))
+               {
+                  state.entryTriggered = true;
+                  state.orderTicket = 0;
+                  break;
+               }
+            }
          }
       }
    }
