@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.39– Market Entry on 50% Leg Touch                 |
+//|         ALS 1.38– Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -151,7 +151,7 @@ void DetectFractals()
    lastBullFractal = FractalPoint();
    lastBearFractal = FractalPoint();
 
-   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
+   for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
       if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
@@ -163,7 +163,7 @@ void DetectFractals()
       }
    }
 
-   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
+   for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
       if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
@@ -200,9 +200,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double high = iHigh(_Symbol, _Period, 0);
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
-
-   if (EnableDebug && forSell)
-      PrintFormat("SELL DEBUG: sweep=%d bos=%d ready=%d entry=%.5f", state.sweepDetected, state.bosConfirmed, state.entryReady, state.entryPrice);
 
    // 1. Sweep detectie
    if (!state.sweepDetected)
@@ -277,15 +274,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       double entryPrice = (state.legHigh + state.legLow) / 2.0;
       state.entryPrice = entryPrice;
 
-      // Max distance check from Asian box
-      double distPips = MathAbs(entryPrice - (forSell ? asianHigh : asianLow)) / _Point;
-      if(distPips > MaxDistanceFromAsianBox)
-      {
-         if(EnableDebug)
-            PrintFormat("%s entry rejected: too far from Asian box (%.1f pips)", side, distPips);
-         return;
-      }
-
       // Visuele lijn
       if (ShowLines)
          DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
@@ -294,8 +282,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       bool prevReady = state.entryReady;
       if (!state.entryReady)
       {
-         if (forSell && price <= entryPrice) state.entryReady = true;
-         if (!forSell && price >= entryPrice) state.entryReady = true;
+         if (forSell && price < entryPrice) state.entryReady = true;
+         if (!forSell && price > entryPrice) state.entryReady = true;
       }
 
       // Plaats een limit order zodra de setup gereed is
