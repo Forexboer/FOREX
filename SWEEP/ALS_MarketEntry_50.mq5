@@ -40,6 +40,30 @@ datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
 
+struct FractalPoint
+{
+   double price;    // extreme value of the fractal
+   double high;     // candle high
+   double low;      // candle low
+   datetime time;
+};
+FractalPoint lastBullFractal, lastBearFractal;
+
+struct SetupState
+{
+   bool sweepDetected;
+   bool bosConfirmed;
+   bool entryTriggered;
+   double legHigh;
+   double legLow;
+   double entryPrice;
+   double bosFractalPrice; // price of the fractal that confirmed BOS
+   datetime sweepFractalTime; // time of fractal used for sweep detection
+   datetime bosFractalTime;   // time of fractal that confirmed BOS
+};
+SetupState buyState, sellState;
+
+
 bool PositionExists(bool forSell)
 {
    if(!PositionSelect(_Symbol))
@@ -64,28 +88,6 @@ void ResetSetup(SetupState &state, string side)
    }
 }
 
-struct FractalPoint
-{
-   double price;    // extreme value of the fractal
-   double high;     // candle high
-   double low;      // candle low
-   datetime time;
-};
-FractalPoint lastBullFractal, lastBearFractal;
-
-struct SetupState
-{
-   bool sweepDetected;
-   bool bosConfirmed;
-   bool entryTriggered;
-   double legHigh;
-   double legLow;
-   double entryPrice;
-   double bosFractalPrice; // price of the fractal that confirmed BOS
-   datetime sweepFractalTime; // time of fractal used for sweep detection
-   datetime bosFractalTime;   // time of fractal that confirmed BOS
-};
-SetupState buyState, sellState;
 
 //+------------------------------------------------------------------+
 int OnInit()
