@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.38– Market Entry on 50% Leg Touch                 |
+//|         ALS 1.17 – Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -54,13 +54,10 @@ struct SetupState
    bool sweepDetected;
    bool bosConfirmed;
    bool entryTriggered;
-   bool entryReady;    // price moved beyond entry level, waiting for retrace
    double legHigh;
    double legLow;
    double entryPrice;
    double bosFractalPrice; // price of the fractal that confirmed BOS
-   double lockedFractalForSL; // fractal used to place stop loss
-   ulong  orderTicket;        // ticket of the pending limit order
 };
 SetupState buyState, sellState;
 
@@ -83,12 +80,6 @@ void OnTick()
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
    if (glLastProcessedDay != dt.day)
    {
-      // Clean up any pending orders from previous day
-      if(buyState.orderTicket > 0)
-         trade.OrderDelete(buyState.orderTicket);
-      if(sellState.orderTicket > 0)
-         trade.OrderDelete(sellState.orderTicket);
-
       glLastProcessedDay = dt.day;
       asianBoxDrawn = false;
       buyState = SetupState();
@@ -201,6 +192,17 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
+   // Only allow one direction to be active at a time
+   if (forSell && buyState.entryTriggered) return;
+   if (!forSell && sellState.entryTriggered) return;
+
+   // Tijdens een actieve setup blijft de leg lopen
+   if (state.sweepDetected && !state.bosConfirmed)
+   {
+      if (forSell && high > state.legHigh)  state.legHigh = high;
+      if (!forSell && low  < state.legLow)  state.legLow  = low;
+   }
+
    // 1. Sweep detectie
    if (!state.sweepDetected)
    {
@@ -252,9 +254,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          state.bosConfirmed = true;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
-         // lock fractal for stop loss based on last fractal before BOS
-         if(state.lockedFractalForSL == 0.0)
-            state.lockedFractalForSL = sweepFractal.price;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
          if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
@@ -264,10 +263,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    // 3. Na BOS: volg leg verder
    if (!state.entryTriggered && state.bosConfirmed)
    {
-      double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double price = forSell ? bid : ask;
-
+        double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
       if (forSell && price < state.legLow) state.legLow = price;
       if (!forSell && price > state.legHigh) state.legHigh = price;
 
@@ -278,76 +274,28 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (ShowLines)
          DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
 
-      // Wacht op pullback nadat prijs voorbij de entry-lijn is geweest
-      bool prevReady = state.entryReady;
-      if (!state.entryReady)
-      {
-         if (forSell && price < entryPrice) state.entryReady = true;
-         if (!forSell && price > entryPrice) state.entryReady = true;
-      }
-
-      // Plaats een limit order zodra de setup gereed is
-      if (state.entryReady && !prevReady && state.orderTicket == 0)
+      // Als prijs de 50% raakt, plaats MARKET-order
+      bool trigger = forSell ? (price >= entryPrice) : (price <= entryPrice);
+      if (trigger)
       {
          double sl;
          if(forSell)
-            sl = state.lockedFractalForSL + SLBufferPips * _Point;
+            sl = state.bosFractalPrice + SLBufferPips * _Point;
          else
-            sl = state.lockedFractalForSL - SLBufferPips * _Point;
+            sl = state.bosFractalPrice - SLBufferPips * _Point;
          double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entryPrice - sl) / _Point);
          if (lot <= 0.0) return;
 
          bool sent = forSell
-            ? trade.SellLimit(lot, entryPrice, _Symbol, sl, tp,
-                              ORDER_TIME_GTC, 0, "ALS_17_SELL")
-            : trade.BuyLimit(lot, entryPrice, _Symbol, sl, tp,
-                             ORDER_TIME_GTC, 0, "ALS_17_BUY");
+            ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
+            : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
 
          if (sent)
          {
-            state.orderTicket = trade.ResultOrder();
+            state.entryTriggered = true;
             if (EnableDebug)
-               Print("📥 ", side, " LIMIT order placed at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
-         }
-      }
-
-      // Update bestaande limit order zolang deze niet gevuld is
-      if (state.orderTicket > 0 && !state.entryTriggered)
-      {
-         if(OrderSelect(state.orderTicket))
-         {
-            long ordState = OrderGetInteger(ORDER_STATE);
-            if(ordState == ORDER_STATE_PLACED || ordState == ORDER_STATE_STARTED)
-            {
-               double currentPrice = OrderGetDouble(ORDER_PRICE_OPEN);
-               if(MathAbs(currentPrice - entryPrice) > _Point)
-               {
-                  double sl = forSell ? state.lockedFractalForSL + SLBufferPips * _Point : state.lockedFractalForSL - SLBufferPips * _Point;
-                  double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
-                  trade.OrderModify(state.orderTicket, entryPrice, sl, tp,
-                                    ORDER_TIME_GTC, 0, 0.0);
-               }
-            }
-            else if(ordState == ORDER_STATE_FILLED)
-            {
-               state.entryTriggered = true;
-               state.orderTicket = 0;
-            }
-         }
-
-         // Controleer of positie geopend is
-         for(int i=0;i<PositionsTotal();i++)
-         {
-            if(PositionSelectByTicket(PositionGetTicket(i)))
-            {
-               if(PositionGetInteger(POSITION_MAGIC)==MagicNumber && PositionGetString(POSITION_SYMBOL)==_Symbol && PositionGetInteger(POSITION_TYPE)==(forSell?POSITION_TYPE_SELL:POSITION_TYPE_BUY))
-               {
-                  state.entryTriggered = true;
-                  state.orderTicket = 0;
-                  break;
-               }
-            }
+               Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
       }
    }
@@ -374,4 +322,28 @@ double CalculateLots(double slPips)
 
    double lots = MathFloor(rawLots / step) * step;
    return NormalizeDouble(MathMax(min, MathMin(max, lots)), 2);
+}
+
+//+------------------------------------------------------------------+
+//| Calculate lot size from a stop price                              |
+//+------------------------------------------------------------------+
+double CalculateLotsFromPrice(double stopLossPrice,
+                              ENUM_ORDER_TYPE orderType,
+                              double ask = 0.0,
+                              double bid = 0.0)
+{
+   if(ask == 0.0) ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid == 0.0) bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   double slDistance;
+   if(orderType == ORDER_TYPE_BUY)
+      slDistance = ask - stopLossPrice;
+   else if(orderType == ORDER_TYPE_SELL)
+      slDistance = stopLossPrice - bid;
+   else
+      return SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+
+   slDistance = MathAbs(slDistance) + SLBufferPips * _Point;
+   double slPips = slDistance / _Point;
+   return CalculateLots(slPips);
 }
