@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.17 – Market Entry on 50% Leg Touch                 |
+//|         ALS 1.34– Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -31,8 +31,6 @@ input color   BOSColor                = clrLime;
 input color   EntryLineColor          = clrYellow;
 input color   AsianBoxColor           = clrAqua;
 input bool    EnableDebug             = true;
-input int     MaxBuyTradesPerDay      = 3;
-input int     MaxSellTradesPerDay     = 3;
 
 //--- Globals
 CTrade trade;
@@ -41,9 +39,6 @@ int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
-int buyTradesToday = 0;
-int sellTradesToday = 0;
-int glTradeDayOfYear = -1;
 
 struct FractalPoint
 {
@@ -67,24 +62,6 @@ struct SetupState
    double lockedFractalForSL; // fractal used to place stop loss
 };
 SetupState buyState, sellState;
-
-//--- Utility: compute day of year for compatibility with older terminals
-int GetDayOfYear(datetime time_val)
-{
-   MqlDateTime dt;
-   TimeToStruct(time_val, dt);
-
-   MqlDateTime jan1;
-   jan1.year = dt.year;
-   jan1.mon  = 1;
-   jan1.day  = 1;
-   jan1.hour = 0;
-   jan1.min  = 0;
-   jan1.sec  = 0;
-
-   datetime start = StructToTime(jan1);
-   return int((time_val - start) / 86400);
-}
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -110,13 +87,6 @@ void OnTick()
       buyState = SetupState();
       sellState = SetupState();
       ObjectsDeleteAll(0, "", 0);
-   }
-   int dayOfYear = GetDayOfYear(TimeCurrent());
-   if (glTradeDayOfYear != dayOfYear)
-   {
-      glTradeDayOfYear = dayOfYear;
-      buyTradesToday = 0;
-      sellTradesToday = 0;
    }
 
    UpdateAsianSession();
@@ -314,18 +284,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
       if (trigger)
       {
-         if(forSell && sellTradesToday >= MaxSellTradesPerDay)
-         {
-            if(EnableDebug)
-               Print("\xF0\x9F\x9A\xAB SELL limit reached for today on ", _Symbol);
-            return;
-         }
-         if(!forSell && buyTradesToday >= MaxBuyTradesPerDay)
-         {
-            if(EnableDebug)
-               Print("\xF0\x9F\x9A\xAB BUY limit reached for today on ", _Symbol);
-            return;
-         }
          double sl;
          if(forSell)
             sl = state.lockedFractalForSL + SLBufferPips * _Point;
@@ -342,10 +300,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (sent)
          {
             state.entryTriggered = true;
-            if(forSell)
-               sellTradesToday++;
-            else
-               buyTradesToday++;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
