@@ -299,8 +299,10 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (lot <= 0.0) return;
 
          bool sent = forSell
-            ? trade.SellLimit(lot, entryPrice, _Symbol, sl, tp, "ALS_17_SELL")
-            : trade.BuyLimit(lot, entryPrice, _Symbol, sl, tp, "ALS_17_BUY");
+            ? trade.SellLimit(lot, entryPrice, _Symbol, sl, tp,
+                              ORDER_TIME_GTC, 0, "ALS_17_SELL")
+            : trade.BuyLimit(lot, entryPrice, _Symbol, sl, tp,
+                             ORDER_TIME_GTC, 0, "ALS_17_BUY");
 
          if (sent)
          {
@@ -313,7 +315,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       // Update bestaande limit order zolang deze niet gevuld is
       if (state.orderTicket > 0 && !state.entryTriggered)
       {
-         if(OrderSelect(state.orderTicket, SELECT_BY_TICKET))
+         if(OrderSelect(state.orderTicket))
          {
             long ordState = OrderGetInteger(ORDER_STATE);
             if(ordState == ORDER_STATE_PLACED || ordState == ORDER_STATE_STARTED)
@@ -323,7 +325,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
                {
                   double sl = forSell ? state.lockedFractalForSL + SLBufferPips * _Point : state.lockedFractalForSL - SLBufferPips * _Point;
                   double tp = forSell ? entryPrice - (sl - entryPrice) * RiskRewardRatio : entryPrice + (entryPrice - sl) * RiskRewardRatio;
-                  trade.OrderModify(state.orderTicket, entryPrice, sl, tp);
+                  trade.OrderModify(state.orderTicket, entryPrice, sl, tp,
+                                    ORDER_TIME_GTC, 0, 0.0);
                }
             }
             else if(ordState == ORDER_STATE_FILLED)
