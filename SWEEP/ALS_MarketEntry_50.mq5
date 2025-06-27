@@ -60,6 +60,7 @@ struct SetupState
    double bosFractalPrice; // price of the fractal that confirmed BOS
    datetime sweepFractalTime; // time of fractal used for sweep detection
    datetime bosFractalTime;   // time of fractal that confirmed BOS
+   datetime lastEntryBOSTime; // time of BOS fractal used for last entry
 };
 SetupState buyState, sellState;
 
@@ -175,9 +176,18 @@ void DetectFractals()
    lastBullFractal = FractalPoint();
    lastBearFractal = FractalPoint();
 
-   for (int i = 2; i < ArraySize(rates) - 2; i++)
+   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
    {
-      if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
+      bool isFractal = true;
+      for(int j=1; j<=FractalLookback; j++)
+      {
+         if(!(rates[i].low < rates[i-j].low && rates[i].low < rates[i+j].low))
+         {
+            isFractal = false;
+            break;
+         }
+      }
+      if(isFractal)
       {
          lastBullFractal.price = rates[i].low;
          lastBullFractal.high  = rates[i].high;
@@ -187,9 +197,18 @@ void DetectFractals()
       }
    }
 
-   for (int i = 2; i < ArraySize(rates) - 2; i++)
+   for (int i = FractalLookback; i < ArraySize(rates) - FractalLookback; i++)
    {
-      if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
+      bool isFractal = true;
+      for(int j=1; j<=FractalLookback; j++)
+      {
+         if(!(rates[i].high > rates[i-j].high && rates[i].high > rates[i+j].high))
+         {
+            isFractal = false;
+            break;
+         }
+      }
+      if(isFractal)
       {
          lastBearFractal.price = rates[i].high;
          lastBearFractal.high  = rates[i].high;
@@ -239,11 +258,15 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    // 1. Sweep detectie
    if (!state.sweepDetected)
    {
+      double distAsian = forSell ? high - asianHigh : asianLow - low;
+      double distFractal = forSell
+         ? MathAbs(sweepFractal.price - asianHigh)
+         : MathAbs(sweepFractal.price - asianLow);
       bool swept = forSell
          ? (high > asianHigh && sweepFractal.price > 0 && high >= sweepFractal.price)
          : (low < asianLow && sweepFractal.price > 0 && low <= sweepFractal.price);
 
-      if (swept)
+      if(swept && distAsian <= MaxDistanceFromAsianBox * _Point && distFractal <= MaxDistanceFromAsianBox * _Point)
       {
          state.sweepDetected = true;
          state.sweepFractalTime = sweepFractal.time;
@@ -259,13 +282,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    if (!state.bosConfirmed && state.sweepDetected)
    {
       if (bosFractal.price <= 0.0) return;
-
-      // BOS fractal must exist prior to the swept fractal used for detection
-      if (bosFractal.time > state.sweepFractalTime)
-      {
-         if (EnableDebug) Print("\xF0\x9F\x9A\xAB Ongeldige BOS fractal \xE2\x80\x93 tegenovergestelde fractal niet uitgenomen.");
-         return;
-      }
+      if (bosFractal.time == state.lastEntryBOSTime) return;
 
       bool bos = false;
       if (forSell)
@@ -286,7 +303,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (bos)
       {
          state.bosConfirmed = true;
-         // store SL reference from BOS fractal (high for sell, low for buy)
+         state.entryTriggered = false; // nieuwe BOS reset entry
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
          state.bosFractalTime  = bosFractal.time;
          if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
@@ -296,7 +313,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    }
 
    // 3. Na BOS: volg leg verder
-   if (!state.entryTriggered && state.bosConfirmed)
+   if (state.bosConfirmed)
    {
         double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
       if (forSell && price < state.legLow) state.legLow = price;
@@ -310,7 +327,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          DrawLine(forSell ? "ENTRY_SELL" : "ENTRY_BUY", entryPrice, EntryLineColor);
 
       // Als prijs de 50% raakt, plaats MARKET-order
-      bool trigger = forSell ? (price >= entryPrice) : (price <= entryPrice);
+      bool trigger = !state.entryTriggered && (forSell ? (price >= entryPrice) : (price <= entryPrice));
       if (trigger)
       {
          double sl;
@@ -329,6 +346,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (sent)
          {
             state.entryTriggered = true;
+            state.bosConfirmed = false;          // wacht op nieuwe BOS
+            state.lastEntryBOSTime = state.bosFractalTime;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
