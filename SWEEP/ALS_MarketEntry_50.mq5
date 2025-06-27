@@ -262,9 +262,10 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       double distFractal = forSell
          ? MathAbs(sweepFractal.price - asianHigh)
          : MathAbs(sweepFractal.price - asianLow);
+      double overshoot = 0.1 * _Point; // minimaal 0.1 pip
       bool swept = forSell
-         ? (high > asianHigh && sweepFractal.price > 0 && high >= sweepFractal.price)
-         : (low < asianLow && sweepFractal.price > 0 && low <= sweepFractal.price);
+         ? (high > asianHigh && (high - asianHigh) >= overshoot && sweepFractal.price > 0 && high >= sweepFractal.price)
+         : (low < asianLow && (asianLow - low) >= overshoot && sweepFractal.price > 0 && low <= sweepFractal.price);
 
       if(swept && distAsian <= MaxDistanceFromAsianBox * _Point && distFractal <= MaxDistanceFromAsianBox * _Point)
       {
@@ -279,6 +280,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    }
 
    // 2. BOS detectie
+   double asiaMid = (asianHigh + asianLow) / 2.0;
+   if(forSell && close <= asiaMid) return;    // prijs moet boven midpoint zijn
+   if(!forSell && close >= asiaMid) return;   // prijs moet onder midpoint zijn
    if (!state.bosConfirmed && state.sweepDetected)
    {
       if (bosFractal.price <= 0.0) return;
