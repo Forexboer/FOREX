@@ -255,7 +255,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    }
 
    // 3. Na BOS: volg leg verder
-   if (!state.entryTriggered && state.bosConfirmed)
+   if (state.bosConfirmed)
    {
       double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -302,6 +302,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
             state.entryTriggered = true;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
+
+            // allow new BOS setups after a trade
+            state = SetupState();
          }
       }
    }
