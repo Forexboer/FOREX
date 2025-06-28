@@ -307,6 +307,14 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
       if (trigger)
       {
+         double midPrice = (asianHigh + asianLow) / 2.0;
+         if ((forSell && price < midPrice) || (!forSell && price > midPrice))
+         {
+            if (EnableDebug) Print("\xF0\x9F\x9A\xAB Entry skipped due to Asian range bias filter");
+            state.entryTriggered = true;
+            return;
+         }
+
          double sl;
          if(forSell)
             sl = state.lockedFractalForSL + SLBufferPips * _Point;
