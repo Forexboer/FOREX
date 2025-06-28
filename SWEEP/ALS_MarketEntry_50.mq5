@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.45 – Market Entry on 50% Leg Touch                 |
+//|         ALS 1.46 – Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -95,24 +95,40 @@ void OnTick()
    if (!asianBoxDrawn) return;
 
    DetectFractals();
-   // Re-arm setups when a new opposite fractal appears after a BOS
-   if(sellState.entryTriggered &&
-      sellState.lastBOSFractalTime > 0 &&
-      lastBullFractal.time > 0 &&
-      lastBullFractal.time > sellState.lastBOSFractalTime)
+
+   // Re-arm setups when new fractals form after a BOS so additional
+   // entries can trigger even while previous trades remain open.
+   if(sellState.entryTriggered && sellState.lastBOSFractalTime > 0)
    {
-      sellState.entryTriggered = false;
-      sellState.bosConfirmed = false;
-      sellState.entryReady = false;
+      bool newOpposite = lastBullFractal.time > 0 && lastBullFractal.time > sellState.lastBOSFractalTime;
+      bool newSame     = lastBearFractal.time > 0 && lastBearFractal.time > sellState.lastBOSFractalTime;
+      if(newOpposite || newSame)
+      {
+         sellState.entryTriggered = false;
+         sellState.bosConfirmed   = false;
+         sellState.entryReady     = false;
+         if(newSame)
+         {
+            sellState.sweepDetected      = false;
+            sellState.lockedFractalForSL = 0.0;
+         }
+      }
    }
-   if(buyState.entryTriggered &&
-      buyState.lastBOSFractalTime > 0 &&
-      lastBearFractal.time > 0 &&
-      lastBearFractal.time > buyState.lastBOSFractalTime)
+   if(buyState.entryTriggered && buyState.lastBOSFractalTime > 0)
    {
-      buyState.entryTriggered = false;
-      buyState.bosConfirmed = false;
-      buyState.entryReady = false;
+      bool newOpposite = lastBearFractal.time > 0 && lastBearFractal.time > buyState.lastBOSFractalTime;
+      bool newSame     = lastBullFractal.time > 0 && lastBullFractal.time > buyState.lastBOSFractalTime;
+      if(newOpposite || newSame)
+      {
+         buyState.entryTriggered = false;
+         buyState.bosConfirmed   = false;
+         buyState.entryReady     = false;
+         if(newSame)
+         {
+            buyState.sweepDetected      = false;
+            buyState.lockedFractalForSL = 0.0;
+         }
+      }
    }
    if (ShowFractals) DrawFractals();
 
