@@ -60,6 +60,8 @@ struct SetupState
    double entryPrice;
    double bosFractalPrice; // price of the fractal that confirmed BOS
    double lockedFractalForSL; // fractal used to place stop loss
+   int      tradesCount;
+   datetime lastBOSFractalTime;
 };
 SetupState buyState, sellState;
 
@@ -93,6 +95,25 @@ void OnTick()
    if (!asianBoxDrawn) return;
 
    DetectFractals();
+   // Re-arm setups when a new opposite fractal appears after a BOS
+   if(sellState.entryTriggered &&
+      sellState.lastBOSFractalTime > 0 &&
+      lastBullFractal.time > 0 &&
+      lastBullFractal.time > sellState.lastBOSFractalTime)
+   {
+      sellState.entryTriggered = false;
+      sellState.bosConfirmed = false;
+      sellState.entryReady = false;
+   }
+   if(buyState.entryTriggered &&
+      buyState.lastBOSFractalTime > 0 &&
+      lastBearFractal.time > 0 &&
+      lastBearFractal.time > buyState.lastBOSFractalTime)
+   {
+      buyState.entryTriggered = false;
+      buyState.bosConfirmed = false;
+      buyState.entryReady = false;
+   }
    if (ShowFractals) DrawFractals();
 
    RunSetup(false, buyState, lastBullFractal, lastBearFractal); // BUY
@@ -243,6 +264,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (bos)
       {
          state.bosConfirmed = true;
+         state.lastBOSFractalTime = bosFractal.time;
+         state.tradesCount++;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
          // lock fractal for stop loss based on last fractal before BOS
@@ -279,7 +302,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       }
 
       bool trigger = false;
-      if (state.entryReady)
+      if (state.entryReady && !state.entryTriggered)
          trigger = forSell ? (bid >= entryPrice) : (ask <= entryPrice);
 
       if (trigger)
@@ -297,15 +320,13 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
             ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
             : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
 
-         if (sent)
-         {
-            state.entryTriggered = true;
-            if (EnableDebug)
-               Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
-
-            // allow new BOS setups after a trade
-            state = SetupState();
-         }
+        if (sent)
+        {
+           state.entryTriggered = true;
+           if (EnableDebug)
+              Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
+            // state will be re-armed when a new fractal forms
+        }
       }
    }
 }
