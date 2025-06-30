@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|         ALS 1.46 – Market Entry on 50% Leg Touch                 |
+//|         ALS 1.17 – Market Entry on 50% Leg Touch                 |
 //|     © 2024 Greaterwaves Coder for MT5 – www.greaterwaves.com     |
 //+------------------------------------------------------------------+
 #property strict
@@ -60,8 +60,6 @@ struct SetupState
    double entryPrice;
    double bosFractalPrice; // price of the fractal that confirmed BOS
    double lockedFractalForSL; // fractal used to place stop loss
-   int      tradesCount;
-   datetime lastBOSFractalTime;
 };
 SetupState buyState, sellState;
 
@@ -95,41 +93,6 @@ void OnTick()
    if (!asianBoxDrawn) return;
 
    DetectFractals();
-
-   // Re-arm setups when new fractals form after a BOS so additional
-   // entries can trigger even while previous trades remain open.
-   if(sellState.entryTriggered && sellState.lastBOSFractalTime > 0)
-   {
-      bool newOpposite = lastBullFractal.time > 0 && lastBullFractal.time > sellState.lastBOSFractalTime;
-      bool newSame     = lastBearFractal.time > 0 && lastBearFractal.time > sellState.lastBOSFractalTime;
-      if(newOpposite || newSame)
-      {
-         sellState.entryTriggered = false;
-         sellState.bosConfirmed   = false;
-         sellState.entryReady     = false;
-         if(newSame)
-         {
-            sellState.sweepDetected      = false;
-            sellState.lockedFractalForSL = 0.0;
-         }
-      }
-   }
-   if(buyState.entryTriggered && buyState.lastBOSFractalTime > 0)
-   {
-      bool newOpposite = lastBearFractal.time > 0 && lastBearFractal.time > buyState.lastBOSFractalTime;
-      bool newSame     = lastBullFractal.time > 0 && lastBullFractal.time > buyState.lastBOSFractalTime;
-      if(newOpposite || newSame)
-      {
-         buyState.entryTriggered = false;
-         buyState.bosConfirmed   = false;
-         buyState.entryReady     = false;
-         if(newSame)
-         {
-            buyState.sweepDetected      = false;
-            buyState.lockedFractalForSL = 0.0;
-         }
-      }
-   }
    if (ShowFractals) DrawFractals();
 
    RunSetup(false, buyState, lastBullFractal, lastBearFractal); // BUY
@@ -280,8 +243,6 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       if (bos)
       {
          state.bosConfirmed = true;
-         state.lastBOSFractalTime = bosFractal.time;
-         state.tradesCount++;
          // store SL reference from BOS fractal (high for sell, low for buy)
          state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
          // lock fractal for stop loss based on last fractal before BOS
@@ -294,7 +255,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    }
 
    // 3. Na BOS: volg leg verder
-   if (state.bosConfirmed)
+   if (!state.entryTriggered && state.bosConfirmed)
    {
       double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -318,19 +279,11 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       }
 
       bool trigger = false;
-      if (state.entryReady && !state.entryTriggered)
+      if (state.entryReady)
          trigger = forSell ? (bid >= entryPrice) : (ask <= entryPrice);
 
       if (trigger)
       {
-         double midPrice = (asianHigh + asianLow) / 2.0;
-         if ((forSell && price < midPrice) || (!forSell && price > midPrice))
-         {
-            if (EnableDebug) Print("\xF0\x9F\x9A\xAB Entry skipped due to Asian range bias filter");
-            state.entryTriggered = true;
-            return;
-         }
-
          double sl;
          if(forSell)
             sl = state.lockedFractalForSL + SLBufferPips * _Point;
@@ -344,13 +297,12 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
             ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
             : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
 
-        if (sent)
-        {
-           state.entryTriggered = true;
-           if (EnableDebug)
-              Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
-            // state will be re-armed when a new fractal forms
-        }
+         if (sent)
+         {
+            state.entryTriggered = true;
+            if (EnableDebug)
+               Print("📥 ", side, " MARKET order at ", entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
+         }
       }
    }
 }
