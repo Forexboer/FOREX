@@ -259,8 +259,49 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    // 3. Na BOS: volg leg verder
    if (!state.entryTriggered && state.bosConfirmed)
    {
-      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+      bool updated = false;
+      if (forSell)
+      {
+         if (low < state.legLow)
+         {
+            state.legLow = low;
+            updated = true;
+         }
+      }
+      else
+      {
+         if (high > state.legHigh)
+         {
+            state.legHigh = high;
+            updated = true;
+         }
+      }
+      if (updated)
+      {
+         state.entryPrice = (state.legHigh + state.legLow) / 2.0;
+         if (EnableDebug)
+            Print("🔄 ", side, " leg updated. New entry=", state.entryPrice);
+      }
+
       double entry = state.entryPrice;
+
+      if (MaxDistanceFromAsianBox > 0)
+      {
+         double distPips = 0.0;
+         if (forSell && entry > asianHigh)
+            distPips = (entry - asianHigh) / _Point;
+         else if (!forSell && entry < asianLow)
+            distPips = (asianLow - entry) / _Point;
+         if (distPips > MaxDistanceFromAsianBox)
+         {
+            if (EnableDebug)
+               Print("⚠️ ", side, " setup skipped - entry too far from Asian box: ", distPips, " pips");
+            state = SetupState();
+            return;
+         }
+      }
+
+      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
 
       // Visuele lijn
       if (ShowLines)
