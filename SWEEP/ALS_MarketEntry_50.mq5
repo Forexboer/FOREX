@@ -166,16 +166,28 @@ void DetectFractals()
       }
    }
 
-   if (EnableDebug)
-      Print("Fractals: Bull=", lastBullFractal.price, " Bear=", lastBearFractal.price);
+   static datetime lastLogBarTime = 0;
+   if (rates[0].time != lastLogBarTime)
+   {
+      if (EnableDebug)
+         Print("Fractals: Bull=", lastBullFractal.price, " Bear=", lastBearFractal.price);
+      lastLogBarTime = rates[0].time;
+   }
 }
 //+------------------------------------------------------------------+
 void DrawFractals()
 {
    if (lastBullFractal.price > 0.0)
-      DrawLine("BullFractal", lastBullFractal.price, FractalBullColor);
+      DrawArrow("BullFractal", lastBullFractal.time, lastBullFractal.price, FractalBullColor, 241);
    if (lastBearFractal.price > 0.0)
-      DrawLine("BearFractal", lastBearFractal.price, FractalBearColor);
+      DrawArrow("BearFractal", lastBearFractal.time, lastBearFractal.price, FractalBearColor, 242);
+}
+void DrawArrow(string name, datetime time, double price, color clr, int code)
+{
+   ObjectDelete(0, name);
+   ObjectCreate(0, name, OBJ_ARROW, 0, time, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, code);
 }
 void DrawLine(string name, double price, color clr)
 {
@@ -215,13 +227,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    {
       if (bosFractal.price <= 0.0) return;
 
-      // BOS fractal must exist prior to the swept fractal
-      if (bosFractal.time > sweepFractal.time)
-      {
-         if (EnableDebug) Print("\xF0\x9F\x9A\xAB Ongeldige BOS fractal \xE2\x80\x93 tegenovergestelde fractal niet uitgenomen.");
-         return;
-      }
-
+      // allow BOS even if fractal formed after the sweep
       bool bos = false;
       if (forSell)
       {
