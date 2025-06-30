@@ -14,6 +14,8 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 2.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
+input int     MaxBuysPerDay           = 1;
+input int     MaxSellsPerDay          = 1;
 
 sinput group "Fractals & BOS"
 input int     FractalLookback         = 3;
@@ -39,6 +41,8 @@ int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
+int buyCount = 0;
+int sellCount = 0;
 
 struct FractalPoint
 {
@@ -84,6 +88,8 @@ void OnTick()
       asianBoxDrawn = false;
       buyState = SetupState();
       sellState = SetupState();
+      buyCount = 0;
+      sellCount = 0;
       ObjectsDeleteAll(0, "", 0);
    }
 
@@ -200,6 +206,8 @@ void DrawLine(string name, double price, color clr)
 void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, FractalPoint &bosFractal)
 {
    string side = forSell ? "SELL" : "BUY";
+   if(forSell && sellCount >= MaxSellsPerDay) return;
+   if(!forSell && buyCount >= MaxBuysPerDay) return;
    double high = iHigh(_Symbol, _Period, 0);
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
@@ -326,7 +334,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
 
          if (sent)
          {
-            state.entryTriggered = true;
+            if(forSell) sellCount++; else buyCount++;
+            state = SetupState();
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
