@@ -8,11 +8,11 @@
 //--- Inputs
 sinput group "Session & Risk"
 input ulong   MagicNumber             = 777;
-input string  AsianSessionStartStr    = "02:00";
-input string  AsianSessionEndStr      = "06:00";
+input string  AsianSessionStartStr    = "03:00";
+input string  AsianSessionEndStr      = "07:00";
 input double  RiskPercentPerTrade     = 1.0;
-input double  RiskRewardRatio         = 2.0;
-input int     SLBufferPips            = 10;
+input double  RiskRewardRatio         = 3.0;
+input int     SLBufferPips            = 0;
 input int     MaxDistanceFromAsianBox = 25;
 input int     MaxBuysPerDay           = 3;
 input int     MaxSellsPerDay          = 3;
