@@ -14,8 +14,8 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 2.0;
 input int     SLBufferPips            = 10;
 input int     MaxDistanceFromAsianBox = 25;
-input int     MaxBuysPerDay           = 1;
-input int     MaxSellsPerDay          = 1;
+input int     MaxBuysPerDay           = 3;
+input int     MaxSellsPerDay          = 3;
 
 sinput group "Fractals & BOS"
 input int     FractalLookback         = 3;
