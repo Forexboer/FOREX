@@ -45,6 +45,8 @@ int buyCount = 0;
 int sellCount = 0;
 double lastBuyTradeLow = 0.0;
 double lastSellTradeHigh = 0.0;
+double dailyHigh = 0.0;
+double dailyLow  = 0.0;
 
 struct FractalPoint
 {
@@ -94,11 +96,27 @@ void OnTick()
       sellCount = 0;
       lastBuyTradeLow = 0.0;
       lastSellTradeHigh = 0.0;
+      dailyHigh = 0.0;
+      dailyLow  = 0.0;
       ObjectsDeleteAll(0, "", 0);
    }
 
    UpdateAsianSession();
    if (!asianBoxDrawn) return;
+
+   // update daily extremes after Asian box is available
+   double curHigh = iHigh(_Symbol, _Period, 0);
+   double curLow  = iLow(_Symbol, _Period, 0);
+   if(curHigh > dailyHigh)
+   {
+      dailyHigh = curHigh;
+      if(EnableDebug) Print("📈 New dailyHigh=", dailyHigh);
+   }
+   if(curLow < dailyLow)
+   {
+      dailyLow = curLow;
+      if(EnableDebug) Print("📉 New dailyLow=", dailyLow);
+   }
 
    DetectFractals();
    if (ShowFractals) DrawFractals();
@@ -139,6 +157,9 @@ void UpdateAsianSession()
 
    if (EnableDebug)
       Print("✅ Asian Box: High=", asianHigh, " Low=", asianLow);
+
+   dailyHigh = asianHigh;
+   dailyLow  = asianLow;
 
    asianBoxDrawn = true;
 }
@@ -216,12 +237,12 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
 
-   // After a trade wait for a new extreme before restarting
+   // After a trade wait for a new daily extreme before restarting
    if(state.entryTriggered)
    {
       if(forSell)
       {
-         if(high > lastSellTradeHigh)
+         if(dailyHigh > lastSellTradeHigh)
          {
             state = SetupState();
             lastSellTradeHigh = 0.0;
@@ -231,7 +252,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       }
       else
       {
-         if(low < lastBuyTradeLow)
+         if(dailyLow < lastBuyTradeLow)
          {
             state = SetupState();
             lastBuyTradeLow = 0.0;
@@ -350,9 +371,9 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
       {
          double sl;
          if(forSell)
-            sl = sweepFractal.price + SLBufferPips * _Point;
+            sl = dailyHigh + SLBufferPips * _Point;
          else
-            sl = sweepFractal.price - SLBufferPips * _Point;
+            sl = dailyLow - SLBufferPips * _Point;
          double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
          double lot = CalculateLots(MathAbs(entry - sl) / _Point);
          if (lot <= 0.0) return;
@@ -365,7 +386,7 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          {
             if(forSell) sellCount++; else buyCount++;
             state.entryTriggered = true;
-            if(forSell) lastSellTradeHigh = state.legHigh; else lastBuyTradeLow = state.legLow;
+            if(forSell) lastSellTradeHigh = dailyHigh; else lastBuyTradeLow = dailyLow;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
