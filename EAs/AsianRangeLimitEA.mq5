@@ -285,8 +285,8 @@ void PlaceLimitOrder(bool forSell,SetupState &state,string side)
    if(lots<=0.0) return;
 
    bool sent=forSell?
-      trade.SellLimit(lots,_Symbol,entry,sl,tp,"ASIAN_SELL"):
-      trade.BuyLimit(lots,_Symbol,entry,sl,tp,"ASIAN_BUY");
+      trade.SellLimit(lots,_Symbol,entry,sl,tp,ORDER_TIME_GTC,0,"ASIAN_SELL"):
+      trade.BuyLimit(lots,_Symbol,entry,sl,tp,ORDER_TIME_GTC,0,"ASIAN_BUY");
    if(sent)
    {
       state.orderPlaced=true;
