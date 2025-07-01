@@ -43,6 +43,8 @@ double asianHigh, asianLow;
 bool asianBoxDrawn = false;
 int buyCount = 0;
 int sellCount = 0;
+double lastBuyTradeLow = 0.0;
+double lastSellTradeHigh = 0.0;
 
 struct FractalPoint
 {
@@ -90,6 +92,8 @@ void OnTick()
       sellState = SetupState();
       buyCount = 0;
       sellCount = 0;
+      lastBuyTradeLow = 0.0;
+      lastSellTradeHigh = 0.0;
       ObjectsDeleteAll(0, "", 0);
    }
 
@@ -211,6 +215,31 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
    double high = iHigh(_Symbol, _Period, 0);
    double low  = iLow(_Symbol, _Period, 0);
    double close = iClose(_Symbol, _Period, 0);
+
+   // After a trade wait for a new extreme before restarting
+   if(state.entryTriggered)
+   {
+      if(forSell)
+      {
+         if(high > lastSellTradeHigh)
+         {
+            state = SetupState();
+            lastSellTradeHigh = 0.0;
+         }
+         else
+            return;
+      }
+      else
+      {
+         if(low < lastBuyTradeLow)
+         {
+            state = SetupState();
+            lastBuyTradeLow = 0.0;
+         }
+         else
+            return;
+      }
+   }
 
    // 1. Sweep detectie
    if (!state.sweepDetected)
@@ -335,7 +364,8 @@ void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, Fract
          if (sent)
          {
             if(forSell) sellCount++; else buyCount++;
-            state = SetupState();
+            state.entryTriggered = true;
+            if(forSell) lastSellTradeHigh = state.legHigh; else lastBuyTradeLow = state.legLow;
             if (EnableDebug)
                Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
