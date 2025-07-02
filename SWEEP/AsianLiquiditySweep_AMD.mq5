@@ -46,7 +46,7 @@ struct FractalPoint
    datetime time;
 };
 
-enum SETUP_STATUS { NONE, WAIT_BOS, BOS_TRIGGERED };
+enum SETUP_STATUS { NONE, WAIT_BOS, WAIT_ENTRY };
 struct Setup
 {
    bool      isSell;
@@ -57,6 +57,7 @@ struct Setup
    double    sl;
    double    tp;
    ulong     ticket;
+   bool      waitingLogged;
 };
 Setup current;
 datetime lastBarTime=0;
@@ -74,13 +75,39 @@ void DrawArrow(string name, datetime t, double price, color clr, int code)
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
 }
 
+void DetectFractalArrows()
+{
+   MqlRates r[]; ArraySetAsSeries(r,true);
+   if(CopyRates(_Symbol,_Period,0,3,r)!=3) return;
+
+   double h1=r[1].high, h0=r[0].high, h2=r[2].high;
+   double l1=r[1].low,  l0=r[0].low,  l2=r[2].low;
+   bool top=(h1>h0 && h1>h2);
+   bool bottom=(l1<l0 && l1<l2);
+
+   if(top)
+   {
+      MqlDateTime t; TimeToStruct(r[1].time,t);
+      string nm=StringFormat("FRACTAL_TOP_%04d%02d%02d_%02d%02d",t.year,t.mon,t.day,t.hour,t.min);
+      DrawArrow(nm,r[1].time,h1,clrRed,242);
+      Print("Fractal top detected @",DoubleToString(h1,_Digits)," (",TimeToString(r[1].time,TIME_DATE|TIME_MINUTES),")");
+   }
+   if(bottom)
+   {
+      MqlDateTime t; TimeToStruct(r[1].time,t);
+      string nm=StringFormat("FRACTAL_BOT_%04d%02d%02d_%02d%02d",t.year,t.mon,t.day,t.hour,t.min);
+      DrawArrow(nm,r[1].time,l1,clrGreen,241);
+      Print("Fractal bottom detected @",DoubleToString(l1,_Digits)," (",TimeToString(r[1].time,TIME_DATE|TIME_MINUTES),")");
+   }
+}
+
 void DeleteNonBoxObjects()
 {
    int total=ObjectsTotal(0,-1,-1);
    for(int i=total-1;i>=0;i--)
    {
-      string nm=ObjectName(0,i);
-      if(StringFind(nm,"ASIAN_BOX_")==0) continue;
+   string nm=ObjectName(0,i);
+      if(StringFind(nm,"ASIAN_BOX_")==0 || StringFind(nm,"FRACTAL_")==0) continue;
       ObjectDelete(0,nm);
    }
 }
@@ -92,6 +119,7 @@ int OnInit()
    DeleteNonBoxObjects();
    current.status = NONE;
    current.ticket = 0;
+   current.waitingLogged = false;
    return(INIT_SUCCEEDED);
 }
 
@@ -133,7 +161,10 @@ void ProcessNewBar()
       DeleteNonBoxObjects();
       sweepArrowName="";
       bosArrowName="";
+      if(current.ticket!=0)
+         trade.OrderDelete(current.ticket);
       current.ticket=0;
+      current.waitingLogged=false;
       asianHigh=0; asianLow=0;
       dailyHigh=0; dailyLow=0;
       dailyExtStartTime=StringToTime(dateStr+" "+DailyExtStart);
@@ -145,6 +176,7 @@ void ProcessNewBar()
    if(!asianBoxDrawn)
       return;
 
+   DetectFractalArrows();
    DetectSweep();
 }
 
@@ -204,6 +236,17 @@ void DetectSweep()
    {
       if(sweepArrowName!="") ObjectDelete(0,sweepArrowName);
       if(bosArrowName!="") { ObjectDelete(0,bosArrowName); bosArrowName=""; }
+      if(current.status==WAIT_ENTRY && current.ticket==0)
+      {
+         Print("❌ No pullback – entry missed for setup on ",TimeToString(current.sweep.time,TIME_DATE|TIME_MINUTES));
+      }
+      if(current.ticket!=0)
+      {
+         trade.OrderDelete(current.ticket);
+         current.ticket=0;
+      }
+      current.status=NONE;
+      current.waitingLogged=false;
       Print("Previous setup invalidated by new sweep fractal.");
    }
 
@@ -221,6 +264,7 @@ void DetectSweep()
    {
       current.isSell=true;
       current.status=WAIT_BOS;
+      current.waitingLogged=false;
       current.sweep.high=h1;
       current.sweep.low =l1;
       current.sweep.time=r[1].time;
@@ -234,6 +278,7 @@ void DetectSweep()
    {
       current.isSell=false;
       current.status=WAIT_BOS;
+      current.waitingLogged=false;
       current.sweep.high=h1;
       current.sweep.low =l1;
       current.sweep.time=r[1].time;
@@ -256,9 +301,9 @@ void ManageSetup()
       TrackLeg();
       CheckBOS();
    }
-   else if(current.status==BOS_TRIGGERED)
+   else if(current.status==WAIT_ENTRY)
    {
-      PlaceOrder();
+      WaitForEntry();
    }
 }
 
@@ -278,7 +323,7 @@ void TrackLeg()
    }
 
    // update entry if BOS fractal known
-   if(current.bos.time>0)
+   if(current.bos.time>0 && UseDynamic50Percent)
    {
       if(current.isSell)
          current.entry50=(current.sweep.high+current.bos.low)/2.0;
@@ -348,7 +393,41 @@ void CheckBOS()
    if(broken)
    {
       Print("Price broke ",current.isSell?"below":"above"," BOS fractal -> BOS triggered");
-      current.status=BOS_TRIGGERED;
+      current.status=WAIT_ENTRY;
+      current.waitingLogged=false;
+   }
+}
+
+//+------------------------------------------------------------------+
+void WaitForEntry()
+{
+   double entry=current.entry50;
+   if(!current.waitingLogged)
+   {
+      Print("Waiting for pullback to entry level ",DoubleToString(entry,_Digits));
+      current.waitingLogged=true;
+   }
+
+   if(EntryOrderType==Limit && current.ticket==0)
+   {
+      PlaceOrder();
+      return;
+   }
+
+   if(EntryOrderType==Market)
+   {
+      double h=iHigh(_Symbol,_Period,0);
+      double l=iLow(_Symbol,_Period,0);
+      if(current.isSell && h>=entry)
+      {
+         Print("🔔 Entry level reached at ",DoubleToString(entry,_Digits)," – executing entry");
+         PlaceOrder();
+      }
+      if(!current.isSell && l<=entry)
+      {
+         Print("🔔 Entry level reached at ",DoubleToString(entry,_Digits)," – executing entry");
+         PlaceOrder();
+      }
    }
 }
 
