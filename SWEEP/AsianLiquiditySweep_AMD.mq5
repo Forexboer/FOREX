@@ -62,19 +62,42 @@ Setup current;
 datetime lastBarTime=0;
 datetime dailyExtStartTime, dailyExtEndTime;
 double dailyHigh=0, dailyLow=0;
+string  asianBoxName="";
+string  sweepArrowName="";
+string  bosArrowName="";
+
+void DrawArrow(string name, datetime t, double price, color clr, int code)
+{
+   ObjectDelete(0,name);
+   ObjectCreate(0,name,OBJ_ARROW,0,t,price);
+   ObjectSetInteger(0,name,OBJPROP_ARROWCODE,code);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+}
+
+void DeleteNonBoxObjects()
+{
+   int total=ObjectsTotal(0,-1,-1);
+   for(int i=total-1;i>=0;i--)
+   {
+      string nm=ObjectName(0,i);
+      if(StringFind(nm,"ASIAN_BOX_")==0) continue;
+      ObjectDelete(0,nm);
+   }
+}
 
 //+------------------------------------------------------------------+
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
-   ObjectsDeleteAll(0, "", 0);
+   DeleteNonBoxObjects();
    current.status = NONE;
+   current.ticket = 0;
    return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
-   ObjectsDeleteAll(0, "", 0);
+   DeleteNonBoxObjects();
 }
 
 //+------------------------------------------------------------------+
@@ -107,7 +130,10 @@ void ProcessNewBar()
       storedDay=dt.day;
       asianBoxDrawn=false;
       current.status=NONE;
-      ObjectsDeleteAll(0,"",0);
+      DeleteNonBoxObjects();
+      sweepArrowName="";
+      bosArrowName="";
+      current.ticket=0;
       asianHigh=0; asianLow=0;
       dailyHigh=0; dailyLow=0;
       dailyExtStartTime=StringToTime(dateStr+" "+DailyExtStart);
@@ -145,13 +171,15 @@ void UpdateAsianRange()
       if(rates[i].low <asianLow)  asianLow =rates[i].low;
    }
 
-   ObjectCreate(0,"ASIAN_BOX",OBJ_RECTANGLE,0,asianStart,asianHigh,asianEnd,asianLow);
-   ObjectSetInteger(0,"ASIAN_BOX",OBJPROP_COLOR,clrAqua);
-   ObjectSetInteger(0,"ASIAN_BOX",OBJPROP_BACK,true);
+   asianBoxName=StringFormat("ASIAN_BOX_%04d%02d%02d",dt.year,dt.mon,dt.day);
+   ObjectCreate(0,asianBoxName,OBJ_RECTANGLE,0,asianStart,asianHigh,asianEnd,asianLow);
+   ObjectSetInteger(0,asianBoxName,OBJPROP_COLOR,clrAqua);
+   ObjectSetInteger(0,asianBoxName,OBJPROP_BACK,true);
    asianBoxDrawn=true;
 
    dailyHigh=asianHigh;
    dailyLow =asianLow;
+   Print("✅ Asian Box: High=",DoubleToString(asianHigh,_Digits)," Low=",DoubleToString(asianLow,_Digits));
 }
 
 //+------------------------------------------------------------------+
@@ -172,6 +200,13 @@ void DetectSweep()
    if(current.status!=NONE && !InvalidateOnNewSweep)
       return;
 
+   if(current.status!=NONE && InvalidateOnNewSweep)
+   {
+      if(sweepArrowName!="") ObjectDelete(0,sweepArrowName);
+      if(bosArrowName!="") { ObjectDelete(0,bosArrowName); bosArrowName=""; }
+      Print("Previous setup invalidated by new sweep fractal.");
+   }
+
    MqlRates r[]; ArraySetAsSeries(r,true);
    if(CopyRates(_Symbol,_Period,0,3,r)!=3) return;
 
@@ -190,6 +225,10 @@ void DetectSweep()
       current.sweep.low =l1;
       current.sweep.time=r[1].time;
       current.bos.time=0;
+      MqlDateTime t; TimeToStruct(r[1].time,t);
+      sweepArrowName=StringFormat("SWEEP_FRCT_%04d%02d%02d_%02d%02d",t.year,t.mon,t.day,t.hour,t.min);
+      DrawArrow(sweepArrowName,r[1].time,h1,clrRed,242);
+      Print("Sweep fractal detected SELL @",DoubleToString(h1,_Digits));
    }
    else if(TradeBuySetups && bullFractal && l1<=asianLow-_Point)
    {
@@ -199,6 +238,10 @@ void DetectSweep()
       current.sweep.low =l1;
       current.sweep.time=r[1].time;
       current.bos.time=0;
+      MqlDateTime t; TimeToStruct(r[1].time,t);
+      sweepArrowName=StringFormat("SWEEP_FRCT_%04d%02d%02d_%02d%02d",t.year,t.mon,t.day,t.hour,t.min);
+      DrawArrow(sweepArrowName,r[1].time,l1,clrGreen,241);
+      Print("Sweep fractal detected BUY @",DoubleToString(l1,_Digits));
    }
 }
 
@@ -260,12 +303,20 @@ void CheckBOS()
    {
       current.bos.high=h1; current.bos.low=l1; current.bos.time=r[1].time;
       current.entry50=(current.sweep.high+current.bos.low)/2.0;
+      MqlDateTime b; TimeToStruct(r[1].time,b);
+      bosArrowName=StringFormat("BOS_FRCT_%04d%02d%02d_%02d%02d",b.year,b.mon,b.day,b.hour,b.min);
+      DrawArrow(bosArrowName,r[1].time,l1,clrGreen,241);
+      Print("BOS fractal found: high=",DoubleToString(h1,_Digits)," low=",DoubleToString(l1,_Digits));
       return;
    }
    if(!current.isSell && bear && h1<current.sweep.high && current.bos.time==0)
    {
       current.bos.high=h1; current.bos.low=l1; current.bos.time=r[1].time;
       current.entry50=(current.sweep.low+current.bos.high)/2.0;
+      MqlDateTime b; TimeToStruct(r[1].time,b);
+      bosArrowName=StringFormat("BOS_FRCT_%04d%02d%02d_%02d%02d",b.year,b.mon,b.day,b.hour,b.min);
+      DrawArrow(bosArrowName,r[1].time,h1,clrRed,242);
+      Print("BOS fractal found: high=",DoubleToString(h1,_Digits)," low=",DoubleToString(l1,_Digits));
       return;
    }
 
@@ -275,23 +326,30 @@ void CheckBOS()
    bool broken=false;
    if(current.isSell)
    {
-      if(l1<current.bos.low)
+      if(l1<=current.bos.low-_Point)
       {
-         if(BOSConfirmationType==BodyBreak && r[1].close>=current.bos.low) {}
-         broken=true;
+         if(BOSConfirmationType==BodyBreak)
+            broken=(r[1].close<current.bos.low);
+         else
+            broken=true;
       }
    }
    else
    {
-      if(h1>current.bos.high)
+      if(h1>=current.bos.high+_Point)
       {
-         if(BOSConfirmationType==BodyBreak && r[1].close<=current.bos.high) {}
-         broken=true;
+         if(BOSConfirmationType==BodyBreak)
+            broken=(r[1].close>current.bos.high);
+         else
+            broken=true;
       }
    }
 
    if(broken)
+   {
+      Print("Price broke ",current.isSell?"below":"above"," BOS fractal -> BOS triggered");
       current.status=BOS_TRIGGERED;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -338,6 +396,9 @@ void PlaceOrder()
       current.ticket=trade.ResultOrder();
       current.sl=slPrice;
       current.tp=tpPrice;
+      Print("Order placed: ",current.isSell?"SELL":"BUY"," ",DoubleToString(lots,2),
+            " @",DoubleToString(entry,_Digits)," SL=",DoubleToString(slPrice,_Digits),
+            " TP=",DoubleToString(tpPrice,_Digits)," (Ticket ",current.ticket,")");
       current.status=NONE; // one setup at a time
    }
 }
