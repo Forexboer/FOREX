@@ -14,7 +14,8 @@ input double  RiskPercentPerTrade     = 1.0;
 input double  RiskRewardRatio         = 3.0;
 input int     SLBufferPips            = 0;
 input int     MaxDistanceFromAsianBox = 25;
-input int     MaxTradesPerDay         = 3;
+input int     MaxBuysPerDay           = 3;
+input int     MaxSellsPerDay          = 3;
 
 sinput group "Fractals & BOS"
 input int     FractalLookback         = 3;
@@ -40,7 +41,8 @@ int glLastProcessedDay = -1;
 datetime asianStart, asianEnd;
 double asianHigh, asianLow;
 bool asianBoxDrawn = false;
-int  tradeCount = 0;
+int buyCount = 0;
+int sellCount = 0;
 double lastBuyTradeLow = 0.0;
 double lastSellTradeHigh = 0.0;
 double dailyHigh = 0.0;
@@ -59,12 +61,11 @@ struct SetupState
 {
    bool sweepDetected;
    bool bosConfirmed;
-   bool orderPlaced;
-   datetime sweepTime;
-   FractalPoint fractal;
-   FractalPoint potential;
-   double bosPrice;
+   bool entryTriggered;
+   double legHigh;
+   double legLow;
    double entryPrice;
+   double bosFractalPrice; // price of the fractal that confirmed BOS
 };
 SetupState buyState, sellState;
 
@@ -91,7 +92,8 @@ void OnTick()
       asianBoxDrawn = false;
       buyState = SetupState();
       sellState = SetupState();
-      tradeCount = 0;
+      buyCount = 0;
+      sellCount = 0;
       lastBuyTradeLow = 0.0;
       lastSellTradeHigh = 0.0;
       dailyHigh = 0.0;
@@ -119,8 +121,8 @@ void OnTick()
    DetectFractals();
    if (ShowFractals) DrawFractals();
 
-   RunSetup(false, buyState); // BUY
-   RunSetup(true, sellState); // SELL
+   RunSetup(false, buyState, lastBullFractal, lastBearFractal); // BUY
+   RunSetup(true, sellState, lastBearFractal, lastBullFractal); // SELL
 }
 //+------------------------------------------------------------------+
 void UpdateAsianSession()
@@ -164,56 +166,41 @@ void UpdateAsianSession()
 //+------------------------------------------------------------------+
 void DetectFractals()
 {
-   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
-   string dateStr = StringFormat("%04d.%02d.%02d", dt.year, dt.mon, dt.day);
-   datetime dayStart = StringToTime(dateStr + " 00:00");
-
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   int copied = CopyRates(_Symbol, _Period, dayStart, TimeCurrent(), rates);
-   if(copied < 5) return;
+   CopyRates(_Symbol, _Period, 0, 50, rates);
 
    lastBullFractal = FractalPoint();
    lastBearFractal = FractalPoint();
 
-   for(int i=2; i<copied-2; i++)
+   for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
-      if(rates[i].low < rates[i-1].low && rates[i].low < rates[i+1].low)
+      if (rates[i].low < rates[i - 1].low && rates[i].low < rates[i + 1].low)
       {
-         bool isNew = true;
-         for(int j=i+1; j<copied; j++)
-            if(rates[j].low <= rates[i].low){ isNew=false; break; }
-         if(isNew)
-         {
-            lastBullFractal.price = rates[i].low;
-            lastBullFractal.high  = rates[i].high;
-            lastBullFractal.low   = rates[i].low;
-            lastBullFractal.time  = rates[i].time;
-         }
+         lastBullFractal.price = rates[i].low;
+         lastBullFractal.high  = rates[i].high;
+         lastBullFractal.low   = rates[i].low;
+         lastBullFractal.time  = rates[i].time;
+         break;
       }
    }
 
-   for(int i=2; i<copied-2; i++)
+   for (int i = 2; i < ArraySize(rates) - 2; i++)
    {
-      if(rates[i].high > rates[i-1].high && rates[i].high > rates[i+1].high)
+      if (rates[i].high > rates[i - 1].high && rates[i].high > rates[i + 1].high)
       {
-         bool isNew = true;
-         for(int j=i+1; j<copied; j++)
-            if(rates[j].high >= rates[i].high){ isNew=false; break; }
-         if(isNew)
-         {
-            lastBearFractal.price = rates[i].high;
-            lastBearFractal.high  = rates[i].high;
-            lastBearFractal.low   = rates[i].low;
-            lastBearFractal.time  = rates[i].time;
-         }
+         lastBearFractal.price = rates[i].high;
+         lastBearFractal.high  = rates[i].high;
+         lastBearFractal.low   = rates[i].low;
+         lastBearFractal.time  = rates[i].time;
+         break;
       }
    }
 
    static datetime lastLogBarTime = 0;
-   if(rates[0].time != lastLogBarTime)
+   if (rates[0].time != lastLogBarTime)
    {
-      if(EnableDebug)
+      if (EnableDebug)
          Print("Fractals: Bull=", lastBullFractal.price, " Bear=", lastBearFractal.price);
       lastLogBarTime = rates[0].time;
    }
@@ -241,15 +228,17 @@ void DrawLine(string name, double price, color clr)
    ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
 }
 //+------------------------------------------------------------------+
-void RunSetup(bool forSell, SetupState &state)
+void RunSetup(bool forSell, SetupState &state, FractalPoint &sweepFractal, FractalPoint &bosFractal)
 {
    string side = forSell ? "SELL" : "BUY";
-   if(tradeCount >= MaxTradesPerDay) return;
+   if(forSell && sellCount >= MaxSellsPerDay) return;
+   if(!forSell && buyCount >= MaxBuysPerDay) return;
    double high = iHigh(_Symbol, _Period, 0);
    double low  = iLow(_Symbol, _Period, 0);
+   double close = iClose(_Symbol, _Period, 0);
 
-   // Wait for new extreme after a trade has been placed
-   if(state.orderPlaced)
+   // After a trade wait for a new daily extreme before restarting
+   if(state.entryTriggered)
    {
       if(forSell)
       {
@@ -258,7 +247,8 @@ void RunSetup(bool forSell, SetupState &state)
             state = SetupState();
             lastSellTradeHigh = 0.0;
          }
-         return;
+         else
+            return;
       }
       else
       {
@@ -267,117 +257,139 @@ void RunSetup(bool forSell, SetupState &state)
             state = SetupState();
             lastBuyTradeLow = 0.0;
          }
-         return;
+         else
+            return;
       }
    }
 
-   // 1. Detect sweep of the Asian range
-   if(!state.sweepDetected)
+   // 1. Sweep detectie
+   if (!state.sweepDetected)
    {
-      bool swept = forSell ? (high > asianHigh) : (low < asianLow);
-      if(swept)
+      bool swept = forSell
+         ? (high > asianHigh && sweepFractal.price > 0 && high >= sweepFractal.price)
+         : (low < asianLow && sweepFractal.price > 0 && low <= sweepFractal.price);
+
+      if (swept)
       {
          state.sweepDetected = true;
-         state.sweepTime = TimeCurrent();
-         state.potential.price = forSell ? high : low;
-         state.potential.high  = high;
-         state.potential.low   = low;
-         state.potential.time  = TimeCurrent();
-         if(EnableDebug) Print("🔻 ", side, " SWEEP detected");
-         if(ShowLines) DrawLine("SWEEP_" + side, forSell ? high : low, SweepColor);
+         state.legHigh = forSell ? high : state.legHigh;
+         state.legLow  = !forSell ? low : state.legLow;
+         if (EnableDebug) Print("🔻 ", side, " SWEEP detected.");
+         if (ShowLines) DrawLine("SWEEP_" + side, forSell ? high : low, SweepColor);
       }
       return;
    }
 
-   // update latest extreme after the sweep
-   if(forSell)
+   // 2. BOS detectie
+   if (!state.bosConfirmed && state.sweepDetected)
    {
-      if(high > state.potential.high)
+      if (bosFractal.price <= 0.0) return;
+
+      // allow BOS even if fractal formed after the sweep
+      bool bos = false;
+      if (forSell)
       {
-         state.potential.price = high;
-         state.potential.high  = high;
-         state.potential.low   = low;
-         state.potential.time  = TimeCurrent();
+         if (BOSConfirmType == WickOnly) bos = low < bosFractal.price;
+         else if (BOSConfirmType == BodyBreak) bos = close < bosFractal.price;
+         else bos = low < bosFractal.price || close < bosFractal.price;
+         if (bos) state.legLow = low;
       }
-   }
-   else
-   {
-      if(state.potential.price==0 || low < state.potential.low)
+      else
       {
-         state.potential.price = low;
-         state.potential.high  = high;
-         state.potential.low   = low;
-         state.potential.time  = TimeCurrent();
+         if (BOSConfirmType == WickOnly) bos = high > bosFractal.price;
+         else if (BOSConfirmType == BodyBreak) bos = close > bosFractal.price;
+         else bos = high > bosFractal.price || close > bosFractal.price;
+         if (bos) state.legHigh = high;
       }
-   }
 
-   // 2. Track fractals forming new daily extremes after the sweep
-   FractalPoint latest = forSell ? lastBearFractal : lastBullFractal;
-   if(latest.price > 0 && latest.time >= state.sweepTime && !state.bosConfirmed)
-   {
-      if(state.fractal.time == 0 || (forSell ? latest.price > state.fractal.price : latest.price < state.fractal.price))
+      if (bos)
       {
-         state.fractal = latest;
-         if(EnableDebug) Print("📌 ", side, " fractal at ", state.fractal.price);
+         state.bosConfirmed = true;
+         // store SL reference from BOS fractal (high for sell, low for buy)
+         state.bosFractalPrice = forSell ? bosFractal.high : bosFractal.low;
+         state.entryPrice = (state.legHigh + state.legLow) / 2.0;
+         if (EnableDebug) Print("✅ ", side, " BOS confirmed. Leg High=", state.legHigh, " Low=", state.legLow);
+         if (ShowLines) DrawLine("BOS_" + side, forSell ? low : high, BOSColor);
       }
+      return;
    }
 
-   FractalPoint checkFractal = state.fractal;
-   if(checkFractal.price <= 0 && BOSConfirmType == WickOnly)
-      checkFractal = state.potential;
-
-   if(checkFractal.price <= 0) return;
-
-   // 3. Break of structure when fractal is broken
-   if(!state.bosConfirmed)
+   // 3. Na BOS: volg leg verder
+   if (!state.entryTriggered && state.bosConfirmed)
    {
-      static datetime lastWaitLog=0;
-      bool bos = forSell ? (low < checkFractal.low) : (high > checkFractal.high);
-      if(bos)
+      bool updated = false;
+      if (forSell)
       {
-        state.bosConfirmed = true;
-        state.bosPrice = forSell ? low : high;
-         if(state.fractal.price <= 0)
-            state.fractal = checkFractal;
-
-         state.entryPrice = forSell ? (state.fractal.high + state.bosPrice) / 2.0
-                                    : (state.fractal.low + state.bosPrice) / 2.0;
-         if(EnableDebug) Print("✅ ", side, " BOS confirmed. Entry=", state.entryPrice);
-         if(ShowLines) DrawLine("BOS_" + side, state.bosPrice, BOSColor);
-
-         double sl = forSell ? dailyHigh + SLBufferPips * _Point
-                             : dailyLow  - SLBufferPips * _Point;
-         double tp = forSell ? state.entryPrice - (sl - state.entryPrice) * RiskRewardRatio
-                             : state.entryPrice + (state.entryPrice - sl) * RiskRewardRatio;
-         double lot = CalculateLots(MathAbs(state.entryPrice - sl) / _Point);
-         if(lot <= 0.0) return;
-
-         double distPips = MathAbs(state.entryPrice - (forSell ? asianHigh : asianLow)) / _Point;
-         if(distPips > MaxDistanceFromAsianBox)
+         if (low < state.legLow)
          {
-            if(EnableDebug) Print("❌ ", side, " entry too far from Asian box: ", distPips);
+            state.legLow = low;
+            updated = true;
+         }
+      }
+      else
+      {
+         if (high > state.legHigh)
+         {
+            state.legHigh = high;
+            updated = true;
+         }
+      }
+      if (updated)
+      {
+         state.entryPrice = (state.legHigh + state.legLow) / 2.0;
+         if (EnableDebug)
+            Print("🔄 ", side, " leg updated. New entry=", state.entryPrice);
+      }
+
+      double entry = state.entryPrice;
+
+      if (MaxDistanceFromAsianBox > 0)
+      {
+         double distPips = 0.0;
+         if (forSell && entry > asianHigh)
+            distPips = (entry - asianHigh) / _Point;
+         else if (!forSell && entry < asianLow)
+            distPips = (asianLow - entry) / _Point;
+         if (distPips > MaxDistanceFromAsianBox)
+         {
+            if (EnableDebug)
+               Print("⚠️ ", side, " setup skipped - entry too far from Asian box: ", distPips, " pips");
             state = SetupState();
             return;
          }
+      }
+
+      double price = (forSell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK));
+
+      // Visuele lijn
+      if (ShowLines)
+         DrawLine("ENTRY_" + side, entry, EntryLineColor);
+
+      // Als prijs de 50% raakt, plaats MARKET-order
+      bool trigger = forSell ? (price >= entry) : (price <= entry);
+      if (trigger)
+      {
+         double sl;
+         if(forSell)
+            sl = dailyHigh + SLBufferPips * _Point;
+         else
+            sl = dailyLow - SLBufferPips * _Point;
+         double tp = forSell ? entry - (sl - entry) * RiskRewardRatio : entry + (entry - sl) * RiskRewardRatio;
+         double lot = CalculateLots(MathAbs(entry - sl) / _Point);
+         if (lot <= 0.0) return;
 
          bool sent = forSell
-            ? trade.SellLimit(lot, state.entryPrice, _Symbol, sl, tp)
-            : trade.BuyLimit(lot, state.entryPrice, _Symbol, sl, tp);
+            ? trade.Sell(lot, _Symbol, 0, sl, tp, "ALS_17_SELL")
+            : trade.Buy(lot, _Symbol, 0, sl, tp, "ALS_17_BUY");
 
-         if(sent)
+         if (sent)
          {
-            tradeCount++;
-            state.orderPlaced = true;
+            if(forSell) sellCount++; else buyCount++;
+            state.entryTriggered = true;
             if(forSell) lastSellTradeHigh = dailyHigh; else lastBuyTradeLow = dailyLow;
-            if(EnableDebug) Print("📥 Pending ", side, " order @", state.entryPrice, " SL=", sl, " TP=", tp, " Lot=", lot);
-            if(ShowLines) DrawLine("ENTRY_" + side, state.entryPrice, EntryLineColor);
+            if (EnableDebug)
+               Print("📥 ", side, " MARKET order at ", entry, " SL=", sl, " TP=", tp, " Lot=", lot);
          }
-      }
-      else if(EnableDebug && lastWaitLog!=TimeCurrent())
-      {
-         Print("⏳ Waiting BOS ", side, " fractal=", checkFractal.price,
-               " dailyHigh=", dailyHigh, " dailyLow=", dailyLow);
-         lastWaitLog = TimeCurrent();
       }
    }
 }
