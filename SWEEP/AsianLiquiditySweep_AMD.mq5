@@ -172,7 +172,7 @@ void DetectSweep()
    if(current.status!=NONE && !InvalidateOnNewSweep)
       return;
 
-   MqlRates r[3]; ArraySetAsSeries(r,true);
+   MqlRates r[]; ArraySetAsSeries(r,true);
    if(CopyRates(_Symbol,_Period,0,3,r)!=3) return;
 
    // check previous completed bar for fractal
@@ -248,7 +248,7 @@ void TrackLeg()
 void CheckBOS()
 {
    // find opposite fractal after sweep
-   MqlRates r[3]; ArraySetAsSeries(r,true);
+   MqlRates r[]; ArraySetAsSeries(r,true);
    if(CopyRates(_Symbol,_Period,0,3,r)!=3) return;
 
    double h1=r[1].high, h0=r[0].high, h2=r[2].high;
@@ -317,12 +317,13 @@ void PlaceOrder()
    double lots=CalculateLots(stopPips);
 
    bool sent=false;
+   trade.SetDeviationInPoints(Slippage);
    if(EntryOrderType==Market)
    {
       if(current.isSell)
-         sent=trade.Sell(lots,_Symbol,0,slPrice,(UseTakeProfit?tpPrice:0),"",Slippage);
+         sent=trade.Sell(lots,_Symbol,0,slPrice,(UseTakeProfit?tpPrice:0),"");
       else
-         sent=trade.Buy(lots,_Symbol,0,slPrice,(UseTakeProfit?tpPrice:0),"",Slippage);
+         sent=trade.Buy(lots,_Symbol,0,slPrice,(UseTakeProfit?tpPrice:0),"");
    }
    else
    {
