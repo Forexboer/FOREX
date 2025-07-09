@@ -110,10 +110,19 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    double spread = ask - bid;
 
    ENUM_DEAL_TYPE deal_type=(ENUM_DEAL_TYPE)HistoryDealGetInteger(trans.deal,DEAL_TYPE);
-   if(deal_type==DEAL_TYPE_BUY && !g_sell_traded)
-      OpenTrade(false, ask, bid, spread);
-   if(deal_type==DEAL_TYPE_SELL && !g_buy_traded)
+   // When closing a position MT5 reports the opposite deal type.
+   // DEAL_TYPE_BUY means a SELL was closed and vice versa.
+   if(deal_type==DEAL_TYPE_BUY && !g_buy_traded)
+   {
+      PrintFormat("Countertrade BUY after SELL stop: deal #%I64u",trans.deal);
       OpenTrade(true, ask, bid, spread);
+   }
+   else
+   if(deal_type==DEAL_TYPE_SELL && !g_sell_traded)
+   {
+      PrintFormat("Countertrade SELL after BUY stop: deal #%I64u",trans.deal);
+      OpenTrade(false, ask, bid, spread);
+   }
 }
 //+------------------------------------------------------------------+
 void ResetDay()
