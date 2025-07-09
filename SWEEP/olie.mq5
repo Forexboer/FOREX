@@ -88,7 +88,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    if(!UseDirectCounterTrade) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD || trans.entry!=DEAL_ENTRY_OUT)
       return;
-   if(trans.magic!=MagicNumber || trans.position_id==0)
+   if(trans.magic!=MagicNumber || trans.position==0)
       return;
    if((int)HistoryDealGetInteger(trans.deal, DEAL_REASON)!=DEAL_REASON_SL)
       return;
@@ -212,7 +212,8 @@ void ManagePositions(double ask, double bid)
 {
    for(int i=PositionsTotal()-1; i>=0; --i)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong posTicket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(posTicket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
 
       ulong ticket = PositionGetInteger(POSITION_IDENTIFIER);
