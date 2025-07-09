@@ -85,21 +85,34 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest& request,
                         const MqlTradeResult& result)
 {
-   if(!UseDirectCounterTrade) return;
-   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD || trans.entry!=DEAL_ENTRY_OUT)
+   if(!UseDirectCounterTrade)
       return;
-   if(trans.magic!=MagicNumber || trans.position==0)
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD)
       return;
-   if((int)HistoryDealGetInteger(trans.deal, DEAL_REASON)!=DEAL_REASON_SL)
+
+   ENUM_DEAL_ENTRY entry=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal,DEAL_ENTRY);
+   if(entry!=DEAL_ENTRY_OUT)
+      return;
+
+   uint magic=(uint)HistoryDealGetInteger(trans.deal,DEAL_MAGIC);
+   if(magic!=MagicNumber)
+      return;
+
+   ulong position_id=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
+   if(position_id==0)
+      return;
+
+   if((int)HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_SL)
       return;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double spread = ask - bid;
 
-   if(trans.position_type==POSITION_TYPE_BUY && !g_sell_traded)
+   ENUM_DEAL_TYPE deal_type=(ENUM_DEAL_TYPE)HistoryDealGetInteger(trans.deal,DEAL_TYPE);
+   if(deal_type==DEAL_TYPE_BUY && !g_sell_traded)
       OpenTrade(false, ask, bid, spread);
-   if(trans.position_type==POSITION_TYPE_SELL && !g_buy_traded)
+   if(deal_type==DEAL_TYPE_SELL && !g_buy_traded)
       OpenTrade(true, ask, bid, spread);
 }
 //+------------------------------------------------------------------+
