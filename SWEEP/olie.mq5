@@ -21,7 +21,7 @@ input int      TrailingStartPips       = 20;        // Trailing start
 input int      TrailingDistancePips    = 15;        // Trailing distance
 input double   RiskPerTradePercent     = 1.0;       // Risk per trade
 input bool     UseSpreadCorrection     = true;      // Adjust for spread
-input bool     UseDirectCounterTrade   = false;     // Immediate counter trade
+input bool     UseDirectCounterTrade   = true;      // Immediate counter trade
 input int      MagicNumber             = 1111;      // Magic number
 
 //--- Global variables
