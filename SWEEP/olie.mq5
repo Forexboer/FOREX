@@ -85,8 +85,6 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest& request,
                         const MqlTradeResult& result)
 {
-   if(!UseDirectCounterTrade)
-      return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD)
       return;
 
@@ -105,23 +103,18 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    if((int)HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_SL)
       return;
 
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double spread = ask - bid;
-
    ENUM_DEAL_TYPE deal_type=(ENUM_DEAL_TYPE)HistoryDealGetInteger(trans.deal,DEAL_TYPE);
    // When closing a position MT5 reports the opposite deal type.
    // DEAL_TYPE_BUY means a SELL was closed and vice versa.
-   if(deal_type==DEAL_TYPE_BUY && !g_buy_traded)
+   if(deal_type==DEAL_TYPE_BUY)
    {
-      PrintFormat("Countertrade BUY after SELL stop: deal #%I64u",trans.deal);
-      OpenTrade(true, ask, bid, spread);
+      PrintFormat("SL counter BUY after SELL stop: deal #%I64u", trans.deal);
+      OpenBuy();
    }
-   else
-   if(deal_type==DEAL_TYPE_SELL && !g_sell_traded)
+   else if(deal_type==DEAL_TYPE_SELL)
    {
-      PrintFormat("Countertrade SELL after BUY stop: deal #%I64u",trans.deal);
-      OpenTrade(false, ask, bid, spread);
+      PrintFormat("SL counter SELL after BUY stop: deal #%I64u", trans.deal);
+      OpenSell();
    }
 }
 //+------------------------------------------------------------------+
@@ -261,6 +254,68 @@ void ManagePositions(double ask, double bid)
          if(isBuy && trail > sl) trade.PositionModify(ticket, trail, tp);
          if(!isBuy && trail < sl) trade.PositionModify(ticket, trail, tp);
       }
+   }
+}
+//+------------------------------------------------------------------+
+void OpenBuy()
+{
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double entry = ask;
+   double sl = entry - StopLossPips*_Point;
+   double tp = entry + TakeProfitPips*_Point;
+   if(UseSpreadCorrection)
+   {
+      double spread = ask - bid;
+      sl -= spread;
+      tp += spread;
+   }
+   double lot = CalculateLotSize();
+   MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+   req.action = TRADE_ACTION_DEAL;
+   req.magic  = MagicNumber;
+   req.symbol = _Symbol;
+   req.type   = ORDER_TYPE_BUY;
+   req.price  = entry;
+   req.sl     = sl;
+   req.tp     = tp;
+   req.volume = lot;
+   req.deviation = 10;
+   if(OrderSend(req, res) && res.retcode==TRADE_RETCODE_DONE)
+   {
+      g_buy_traded = true;
+      g_buy_pos    = res.deal;
+   }
+}
+//+------------------------------------------------------------------+
+void OpenSell()
+{
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double entry = bid;
+   double sl = entry + StopLossPips*_Point;
+   double tp = entry - TakeProfitPips*_Point;
+   if(UseSpreadCorrection)
+   {
+      double spread = ask - bid;
+      sl += spread;
+      tp -= spread;
+   }
+   double lot = CalculateLotSize();
+   MqlTradeRequest req; MqlTradeResult res; ZeroMemory(req); ZeroMemory(res);
+   req.action = TRADE_ACTION_DEAL;
+   req.magic  = MagicNumber;
+   req.symbol = _Symbol;
+   req.type   = ORDER_TYPE_SELL;
+   req.price  = entry;
+   req.sl     = sl;
+   req.tp     = tp;
+   req.volume = lot;
+   req.deviation = 10;
+   if(OrderSend(req, res) && res.retcode==TRADE_RETCODE_DONE)
+   {
+      g_sell_traded = true;
+      g_sell_pos    = res.deal;
    }
 }
 //+------------------------------------------------------------------+
