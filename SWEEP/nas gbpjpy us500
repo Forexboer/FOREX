@@ -34,6 +34,7 @@ enum ENUM_TP_MODE
 input group       "General"
 input ulong       InpMagicNumber       =123456;    // Magic number
 input double      InpLots              =0.10;      // Lots
+input double      RiskPercent          =1.0;       // Risk per trade in percent
 input bool        InpFridayClose       =true;      // Friday close enable
 input string      InpFridayCloseTime   ="21:30";  // Friday close time
 
@@ -362,7 +363,7 @@ void CheckBreakouts()
          bool sell_break=true;
          for(int c=1;c<=ConfirmCloses;c++)
            {
-            double close=iClose(_Symbol,ConfirmTF,c-1);
+            double close=iClose(_Symbol,ConfirmTF,c); // use only closed candles
             if(close<=high) buy_break=false;
             if(close>=low) sell_break=false;
            }
@@ -433,12 +434,32 @@ double CalcStopLoss(bool isBuy,double boxHigh,double boxLow,double entry,int sl_
 //+------------------------------------------------------------------+
 void PlaceOrder(bool isBuy,double sl,double tp1,double tp2,double tp3)
   {
-   double lot=InpLots;
    double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
    double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
    double price=isBuy? ask:bid;
    double pip=PIP();
-   double risk= MathAbs(price-sl);
+   double risk=MathAbs(price-sl);
+
+   double lot=InpLots;
+   if(RiskPercent>0.0 && risk>0.0)
+     {
+      double balance=AccountInfoDouble(ACCOUNT_BALANCE);
+      double money_risk=balance*(RiskPercent/100.0);
+      double tick_val=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+      double tick_size=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+      double pip_value=tick_val/tick_size*pip;
+      double stop_pips=risk/pip;
+      if(stop_pips>0.0 && pip_value>0.0)
+        {
+         lot=money_risk/(stop_pips*pip_value);
+         double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+         double minLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+         double maxLot=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+         lot=MathFloor(lot/step)*step;
+         if(lot<minLot) lot=minLot;
+         if(lot>maxLot) lot=maxLot;
+        }
+     }
 
    // compute TPs
    double tpvals[3]={0,0,0};
