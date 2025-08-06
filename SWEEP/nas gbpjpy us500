@@ -8,8 +8,11 @@
 //| multiple entry methods, modular risk management and visuals.     |
 //+------------------------------------------------------------------+
 
-//--- utility macros
-#define  PIP()    (SymbolInfoDouble(_Symbol, SYMBOL_POINT) * ((_Digits==3 || _Digits==5)?10:1))
+//--- utility helpers
+double PIP()
+  {
+   return SymbolInfoDouble(_Symbol, SYMBOL_POINT) * ((_Digits==3 || _Digits==5)?10:1);
+  }
 
 //--- enums
 enum ENUM_SL_METHOD
@@ -67,8 +70,8 @@ input string      CandleEndTime        ="23:59";   // Candle-close method allowe
 
 input group       "Stop Loss"
 input ENUM_SL_METHOD StopLossMethod    =SL_OppositeBoxSide;
-input double      SL_FixedPips         =50;
-input double      SL_BoxPercent        =50.0;
+input double      SL_FixedPipsValue    =50;
+input double      SL_BoxPercentValue   =50.0;
 input int         SL_ATR_Period        =14;
 input ENUM_TIMEFRAMES SL_ATR_TF        =PERIOD_H1;
 input double      SL_ATR_Mult          =1.5;
@@ -281,8 +284,10 @@ void UpdateSessions()
         {
          if(!sessions[i].box_ready)
            {
-            if(sessions[i].high==0 || High[0]>sessions[i].high) sessions[i].high=High[0];
-            if(sessions[i].low==0 || Low[0]<sessions[i].low) sessions[i].low=Low[0];
+            double barHigh=iHigh(_Symbol,PERIOD_CURRENT,0);
+            double barLow=iLow(_Symbol,PERIOD_CURRENT,0);
+            if(sessions[i].high==0 || barHigh>sessions[i].high) sessions[i].high=barHigh;
+            if(sessions[i].low==0 || barLow<sessions[i].low) sessions[i].low=barLow;
             sessions[i].start_time=st;
             sessions[i].end_time=en;
             DrawSessionBox(i);
@@ -327,20 +332,22 @@ void CheckBreakouts()
       if(!sessions[i].enabled || !sessions[i].box_ready) continue;
       double high=sessions[i].high; double low=sessions[i].low;
       if((high-low)/PIP()>MaxBoxRangePips) continue; // skip large boxes
+      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
 
       // direct breakout
       if(UseDirectBreakout && TimeFilter(DirectStartTime,DirectEndTime))
         {
-         if(!sessions[i].buy_done && Ask>high)
+         if(!sessions[i].buy_done && ask>high)
            {
-            double sl=CalcStopLoss(true,high,low,Ask,StopLossMethod,SL_FixedPips);
+            double sl=CalcStopLoss(true,high,low,ask,StopLossMethod,SL_FixedPipsValue);
             double tp1=0,tp2=0,tp3=0;
             PlaceOrder(true,sl,tp1,tp2,tp3);
             sessions[i].buy_done=true;
            }
-         if(!sessions[i].sell_done && Bid<low)
+         if(!sessions[i].sell_done && bid<low)
            {
-            double sl=CalcStopLoss(false,high,low,Bid,StopLossMethod,SL_FixedPips);
+            double sl=CalcStopLoss(false,high,low,bid,StopLossMethod,SL_FixedPipsValue);
             double tp1=0,tp2=0,tp3=0;
             PlaceOrder(false,sl,tp1,tp2,tp3);
             sessions[i].sell_done=true;
@@ -361,13 +368,13 @@ void CheckBreakouts()
            }
          if(buy_break && !sessions[i].buy_done)
            {
-            double sl=CalcStopLoss(true,high,low,Ask,StopLossMethod,SL_FixedPips);
+            double sl=CalcStopLoss(true,high,low,ask,StopLossMethod,SL_FixedPipsValue);
             PlaceOrder(true,sl,0,0,0);
             sessions[i].buy_done=true;
            }
          if(sell_break && !sessions[i].sell_done)
            {
-            double sl=CalcStopLoss(false,high,low,Bid,StopLossMethod,SL_FixedPips);
+            double sl=CalcStopLoss(false,high,low,bid,StopLossMethod,SL_FixedPipsValue);
             PlaceOrder(false,sl,0,0,0);
             sessions[i].sell_done=true;
            }
@@ -395,7 +402,7 @@ double CalcStopLoss(bool isBuy,double boxHigh,double boxLow,double entry,int sl_
          if(!UseCandleClose && ApplySLOnlyToCandle) sl = isBuy? boxLow : boxHigh;
          else
            {
-            double dist=boxsize*(SL_BoxPercent/100.0);
+            double dist=boxsize*(SL_BoxPercentValue/100.0);
             sl=isBuy? entry - dist : entry + dist;
            }
          break;
@@ -427,7 +434,9 @@ double CalcStopLoss(bool isBuy,double boxHigh,double boxLow,double entry,int sl_
 void PlaceOrder(bool isBuy,double sl,double tp1,double tp2,double tp3)
   {
    double lot=InpLots;
-   double price=isBuy? Ask:Bid;
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double price=isBuy? ask:bid;
    double pip=PIP();
    double risk= MathAbs(price-sl);
 
@@ -491,9 +500,10 @@ void ManagePositions()
   {
    for(int i=PositionsTotal()-1;i>=0;i--)
      {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
-      ulong ticket=PositionGetInteger(POSITION_TICKET);
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       double volume=PositionGetDouble(POSITION_VOLUME);
       bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
@@ -512,7 +522,7 @@ void ManagePositions()
         {
          if(!tpen[j]) continue;
          string name=StringFormat("TP_%I64u_%d",ticket,j+1);
-         if(ObjectFind(0,name)>=0) tp_levels[j]=ObjectGetDouble(0,name,OBJPROP_PRICE1);
+         if(ObjectFind(0,name)>=0) tp_levels[j]=ObjectGetDouble(0,name,OBJPROP_PRICE,0);
         }
 
       for(int j=0;j<3;j++)
@@ -564,12 +574,16 @@ void ApplyBreakeven()
   {
    for(int i=PositionsTotal()-1;i>=0;i--)
      {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
       double sl=PositionGetDouble(POSITION_SL);
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
-      double price=isBuy? Bid:Ask;
+      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+      double price=isBuy? bid:ask;
       double pip=PIP();
       double risk=MathAbs(entry-sl)/pip;
       bool moved=false;
@@ -587,26 +601,26 @@ void ApplyBreakeven()
         }
       if(!moved && BE_OnTP1)
         {
-         string name=StringFormat("TP_%I64u_%d",PositionGetInteger(POSITION_TICKET),1);
+         string name=StringFormat("TP_%I64u_%d",ticket,1);
          if(ObjectFind(0,name)>=0)
            {
-            double tp=ObjectGetDouble(0,name,OBJPROP_PRICE1);
+            double tp=ObjectGetDouble(0,name,OBJPROP_PRICE,0);
             if((isBuy && price>=tp) || (!isBuy && price<=tp)) moved=true;
            }
         }
       if(!moved && BE_OnTP2)
         {
-         string name=StringFormat("TP_%I64u_%d",PositionGetInteger(POSITION_TICKET),2);
+         string name=StringFormat("TP_%I64u_%d",ticket,2);
          if(ObjectFind(0,name)>=0)
            {
-            double tp=ObjectGetDouble(0,name,OBJPROP_PRICE1);
+            double tp=ObjectGetDouble(0,name,OBJPROP_PRICE,0);
             if((isBuy && price>=tp) || (!isBuy && price<=tp)) moved=true;
            }
         }
       if(moved)
         {
          double new_sl=isBuy? entry+BE_BufferPips*pip : entry-BE_BufferPips*pip;
-         trade.PositionModify(PositionGetInteger(POSITION_TICKET),new_sl,PositionGetDouble(POSITION_TP));
+         trade.PositionModify(ticket,new_sl,PositionGetDouble(POSITION_TP));
          Print("Breakeven moved");
         }
      }
@@ -618,11 +632,14 @@ void ApplyTrailing()
    if(!UseTrailing) return;
    for(int i=PositionsTotal()-1;i>=0;i--)
      {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
-      ulong ticket=PositionGetInteger(POSITION_TICKET);
       bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
-      double price=isBuy? Bid:Ask;
+      double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+      double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+      double price=isBuy? bid:ask;
       double sl=PositionGetDouble(POSITION_SL);
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       double pip=PIP();
@@ -632,7 +649,7 @@ void ApplyTrailing()
          string name=StringFormat("TP_%I64u_%d",ticket,1);
          if(ObjectFind(0,name)>=0)
            {
-            double tp=ObjectGetDouble(0,name,OBJPROP_PRICE1);
+            double tp=ObjectGetDouble(0,name,OBJPROP_PRICE,0);
             if((isBuy && price>=tp) || (!isBuy && price<=tp)) start=true;
            }
         }
@@ -656,11 +673,13 @@ void TimeExits()
    if(!UseTimeExit) return;
    for(int i=PositionsTotal()-1;i>=0;i--)
      {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
       datetime open=PositionGetInteger(POSITION_TIME);
       if(TimeCurrent()-open>=ExitAfterMinutes*60)
-        trade.PositionClose(PositionGetInteger(POSITION_TICKET));
+        trade.PositionClose(ticket);
      }
   }
 
@@ -678,9 +697,11 @@ void DailyClosures()
      {
       for(int i=PositionsTotal()-1;i>=0;i--)
         {
-         if(!PositionSelectByIndex(i)) continue;
+         ulong ticket=PositionGetTicket(i);
+         if(ticket==0) continue;
+         if(!PositionSelectByTicket(ticket)) continue;
          if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
-         trade.PositionClose(PositionGetInteger(POSITION_TICKET));
+         trade.PositionClose(ticket);
         }
      }
   }
