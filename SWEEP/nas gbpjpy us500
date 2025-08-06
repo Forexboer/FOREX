@@ -57,7 +57,8 @@ input string      Session2_End         ="10:00";
 input bool        Session3_On          =false;
 input string      Session3_Start       ="13:00";
 input string      Session3_End         ="16:00";
-input double      MaxBoxRangePips      =100;       // Maximum allowed box range
+input bool        LimitBoxRange       =false;     // Enable/disable maximum box size limit
+input double      MaxBoxPips          =90.0;      // Maximum allowed box size in pips
 
 input group       "Entry Methods"
 input bool        UseDirectBreakout    =true;
@@ -162,6 +163,7 @@ CTrade       trade;
 Session      sessions[3];
 bool         isNewBar=true;
 datetime     lastBarTime=0;
+int          g_last_day=-1;
 
 //--- function prototypes
 void   InitSessions();
@@ -173,6 +175,7 @@ void   PlaceOrder(bool isBuy,double sl,double tp1,double tp2,double tp3);
 void   ManagePositions();
 void   DrawSessionBox(int idx);
 void   ResetSessionBox(int idx);
+void   ResetDay();
 double GetATR(int period,ENUM_TIMEFRAMES tf);
 double CalcStopLoss(bool isBuy,double boxHigh,double boxLow,double entry,int sl_method,double sl_distance);
 double RoundLevel(double price,double step,bool up);
@@ -205,6 +208,12 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   MqlDateTime dt; TimeToStruct(TimeCurrent(),dt);
+   if(dt.day!=g_last_day)
+     {
+      g_last_day=dt.day;
+      ResetDay();
+     }
    if(!IsTradingDay()) return;
 
    UpdateSessions();
@@ -271,6 +280,12 @@ void ResetSessionBox(int i)
    if(ObjectFind(0,sessions[i].obj_name)>=0) ObjectDelete(0,sessions[i].obj_name);
   }
 
+void ResetDay()
+  {
+   for(int i=0;i<3;i++)
+      ResetSessionBox(i);
+  }
+
 //+------------------------------------------------------------------+
 void UpdateSessions()
   {
@@ -332,7 +347,7 @@ void CheckBreakouts()
      {
       if(!sessions[i].enabled || !sessions[i].box_ready) continue;
       double high=sessions[i].high; double low=sessions[i].low;
-      if((high-low)/PIP()>MaxBoxRangePips) continue; // skip large boxes
+      if(LimitBoxRange && (high-low)/PIP()>MaxBoxPips) continue; // skip large boxes
       double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
 
@@ -506,13 +521,13 @@ void PlaceOrder(bool isBuy,double sl,double tp1,double tp2,double tp3)
       if(!tpen[i]) continue;
       string name=StringFormat("TP_%I64u_%d",ticket,i+1);
       ObjectCreate(0,name,OBJ_HLINE,0,0,tpvals[i]);
-      ObjectSetInteger(0,name,OBJPROP_COLOR,clrGreen);
+      ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
      }
    if(sl>0)
      {
       string name=StringFormat("SL_%I64u",ticket);
       ObjectCreate(0,name,OBJ_HLINE,0,0,sl);
-      ObjectSetInteger(0,name,OBJPROP_COLOR,clrRed);
+      ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
      }
   }
 
