@@ -85,7 +85,9 @@ CTrade trade;
 //+------------------------------------------------------------------+
 string Trim(string s)
 {
-   return StringTrimLeft(StringTrimRight(s));
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   return s;
 }
 
 //+------------------------------------------------------------------+
@@ -337,6 +339,40 @@ void ResetDailyFlags()
 }
 
 //+------------------------------------------------------------------+
+//| Process windows for a specific day                               |
+//+------------------------------------------------------------------+
+void ProcessDayWindows(NewsWindow &arr[], int minutes)
+{
+   for(int i=0; i<ArraySize(arr); i++)
+   {
+      int start = arr[i].start - PreBufferMinutes;
+      int end   = arr[i].end   + PostBufferMinutes;
+      if(start < 0) start = 0;
+      if(end > 1440) end = 1440;
+      if(minutes >= start && minutes < end)
+      {
+         if(!arr[i].trades_closed)
+         {
+            CloseTrades();
+            arr[i].trades_closed = true;
+         }
+         bool need_delete = false;
+         if(DeleteMode == EnforceNoStops)
+            need_delete = true;
+         else if(DeleteMode == DeleteOnce && !arr[i].stops_deleted)
+            need_delete = true;
+         bool spread_trigger = (SpreadMaxPoints > 0);
+         if(need_delete || spread_trigger)
+         {
+            DeleteStopOrders();
+            if(DeleteMode == DeleteOnce && need_delete)
+               arr[i].stops_deleted = true;
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Check windows for today                                          |
 //+------------------------------------------------------------------+
 void CheckWindows()
@@ -350,33 +386,14 @@ void CheckWindows()
    }
    int minutes = TimeHour(now)*60 + TimeMinute(now);
 
-   NewsWindow &today[] = (day==1)?Monday:(day==2)?Tuesday:(day==3)?Wednesday:(day==4)?Thursday:(day==5)?Friday:Monday; // default Monday for non-handled days
-   for(int i=0; i<ArraySize(today); i++)
+   switch(day)
    {
-      int start = today[i].start - PreBufferMinutes;
-      int end   = today[i].end   + PostBufferMinutes;
-      if(start < 0) start = 0;
-      if(end > 1440) end = 1440;
-      if(minutes >= start && minutes < end)
-      {
-         if(!today[i].trades_closed)
-         {
-            CloseTrades();
-            today[i].trades_closed = true;
-         }
-           bool need_delete = false;
-           if(DeleteMode == EnforceNoStops)
-              need_delete = true;
-           else if(DeleteMode == DeleteOnce && !today[i].stops_deleted)
-              need_delete = true;
-           bool spread_trigger = (SpreadMaxPoints > 0);
-           if(need_delete || spread_trigger)
-           {
-              DeleteStopOrders();
-              if(DeleteMode == DeleteOnce && need_delete)
-                 today[i].stops_deleted = true;
-           }
-      }
+      case 1: ProcessDayWindows(Monday,    minutes); break;
+      case 2: ProcessDayWindows(Tuesday,   minutes); break;
+      case 3: ProcessDayWindows(Wednesday, minutes); break;
+      case 4: ProcessDayWindows(Thursday,  minutes); break;
+      case 5: ProcessDayWindows(Friday,    minutes); break;
+      default: break; // non-handled days
    }
 
    // Friday hard cleanup
