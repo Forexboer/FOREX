@@ -377,14 +377,14 @@ void ProcessDayWindows(NewsWindow &arr[], int minutes)
 //+------------------------------------------------------------------+
 void CheckWindows()
 {
-   datetime now = TimeCurrent();
-   int day = TimeDayOfWeek(now); // 0=Sunday
+   datetime current_time = TimeCurrent();
+   int day = TimeDayOfWeek(current_time); // 0=Sunday
    if(day != current_day)
    {
       current_day = day;
       ResetDailyFlags();
    }
-   int minutes = TimeHour(now)*60 + TimeMinute(now);
+   int minutes = TimeHour(current_time)*60 + TimeMinute(current_time);
 
    switch(day)
    {
