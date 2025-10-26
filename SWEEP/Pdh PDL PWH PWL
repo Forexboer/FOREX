@@ -1331,16 +1331,22 @@ void OnTick()
    // Reset trade flags on calendar changes to avoid stale state
    if(last_day==0)
       last_day = now;
-   if(ResetDaily && TimeDay(now) != TimeDay(last_day))
+   else if(ResetDaily)
      {
-      pdh_traded = false;
-      pdl_traded = false;
-      last_day   = now;
+      MqlDateTime last_tm;
+      TimeToStruct(last_day,last_tm);
+      bool new_calendar_day = (tm.year != last_tm.year || tm.mon != last_tm.mon || tm.day != last_tm.day);
+      if(new_calendar_day)
+        {
+         pdh_traded = false;
+         pdl_traded = false;
+         last_day   = now;
+        }
      }
-   int week_now = TimeDayOfYear(now) / 7;
+   int week_now = tm.day_of_year / 7;
    if(last_week==-1)
       last_week = week_now;
-   if(ResetWeekly && week_now != last_week)
+   else if(ResetWeekly && week_now != last_week)
      {
       pwh_traded = false;
       pwl_traded = false;
