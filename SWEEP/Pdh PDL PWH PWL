@@ -161,6 +161,55 @@ int g_EndHour     = 23;
 int g_EndMinute   = 59;
 
 //+------------------------------------------------------------------+
+//| Configure order filling mode to match broker requirements        |
+//+------------------------------------------------------------------+
+void ConfigureTradeFillingMode()
+  {
+   long fillingModeValue = 0;
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeValue))
+     {
+      int err = GetLastError();
+      PrintFormat("Failed to query filling mode for %s (error %d). Defaulting to IOC.", _Symbol, err);
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+      return;
+     }
+
+   ENUM_SYMBOL_FILLING_MODE fillingMode = (ENUM_SYMBOL_FILLING_MODE)fillingModeValue;
+   ENUM_ORDER_TYPE_FILLING orderFilling = ORDER_FILLING_IOC;
+
+   switch(fillingMode)
+     {
+      case SYMBOL_FILLING_FOK:
+         orderFilling = ORDER_FILLING_FOK;
+         break;
+      case SYMBOL_FILLING_IOC:
+         orderFilling = ORDER_FILLING_IOC;
+         break;
+      case SYMBOL_FILLING_RETURN:
+         orderFilling = ORDER_FILLING_RETURN;
+         break;
+      case SYMBOL_FILLING_ALL:
+         // Prefer IOC when multiple modes are supported to avoid broker rejections.
+         orderFilling = ORDER_FILLING_IOC;
+         break;
+      default:
+         PrintFormat("Unrecognized filling mode %d for %s. Falling back to IOC.", fillingModeValue, _Symbol);
+         orderFilling = ORDER_FILLING_IOC;
+         break;
+     }
+
+   if(!trade.SetTypeFilling(orderFilling))
+     {
+      int err = GetLastError();
+      PrintFormat("Failed to set order filling mode %d for %s (error %d).", (int)orderFilling, _Symbol, err);
+     }
+   else if(DebugLogging)
+     {
+      PrintFormat("Using order filling mode %d for %s.", (int)orderFilling, _Symbol);
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Convert a time string "HH:MM" to hours and minutes               |
 //+------------------------------------------------------------------+
 void ParseTimeString(const string timeStr, int &hour, int &minute)
@@ -1276,10 +1325,13 @@ int OnInit()
    g_WeeklyOrdersRemovedByTrade = false;
    // Apply chart appearance based on user-defined colors
    ApplyChartStyle();
-   
+
    // Set the expert magic number for all orders
    trade.SetExpertMagicNumber(MagicNumber);
-   
+
+   // Configure the filling mode to avoid broker rejections such as "Unsupported filling mode"
+   ConfigureTradeFillingMode();
+
    // Plot the reference levels
    UpdatePlot("PDH",g_PDH,clrGreen);
    UpdatePlot("PDL",g_PDL,clrOrangeRed);
