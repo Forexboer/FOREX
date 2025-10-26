@@ -299,13 +299,21 @@ void DeleteLevelObjects()
    ObjectDelete(ChartID(), "PWL_Level");
   }
 
+int MinutesFromDatetime(const datetime value)
+  {
+   MqlDateTime dt;
+   if(!TimeToStruct(value, dt))
+      return(0);
+   return(dt.hour * 60 + dt.min);
+  }
+
 bool CheckTradingWindow()
   {
    if(g_tradingStartMinutes == g_tradingEndMinutes)
       return(true);
 
    datetime current_time = TimeCurrent();
-   int minutes  = TimeHour(current_time) * 60 + TimeMinute(current_time);
+   int minutes  = MinutesFromDatetime(current_time);
 
    if(g_tradingStartMinutes <= g_tradingEndMinutes)
       return(minutes >= g_tradingStartMinutes && minutes <= g_tradingEndMinutes);
@@ -721,9 +729,9 @@ string NormalizeSymbol(const string symbol)
    string result = "";
    for(int i = 0; i < StringLen(upper); ++i)
       {
-       uchar ch = (uchar)StringGetCharacter(upper, i);
-       if((ch >= 'A' && ch <= 'Z'))
-          result += CharToString((int)ch);
+       int ch = (int)StringGetCharacter(upper, i);
+       if(ch >= 'A' && ch <= 'Z')
+          result += CharToString(ch);
       }
    return(result);
   }
