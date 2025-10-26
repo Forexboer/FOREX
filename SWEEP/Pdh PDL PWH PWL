@@ -159,6 +159,12 @@ bool             g_RiskAddedPDL = false;
 bool             g_RiskAddedPWH = false;
 bool             g_RiskAddedPWL = false;
 
+// Track whether a breakout has already been handled for the current excursion beyond each level
+bool             g_PDH_BreakoutHandled = false;
+bool             g_PDL_BreakoutHandled = false;
+bool             g_PWH_BreakoutHandled = false;
+bool             g_PWL_BreakoutHandled = false;
+
 // Flag indicating that weekly stop orders have been removed as a result of a trade
 // occurring at one of the weekly levels (PWH or PWL). When true, the EA will not attempt
 // to place new weekly pending orders until the next weekly reset (Monday). This avoids
@@ -170,6 +176,8 @@ datetime         g_LastTradeTime = 0;              // Timestamp of last trade
 int              g_ATRHandle = INVALID_HANDLE;     // Handle for ATR indicator
 int              g_TZOffsetMinutes = 0;            // Offset for local timezone (unused, reserved)
 
+ENUM_ORDER_TYPE_FILLING g_DefaultFillingMode = ORDER_FILLING_FOK; // Default trade filling mode
+
 //--- parsed trading hours variables
 int g_StartHour   = 0;
 int g_StartMinute = 0;
@@ -177,46 +185,56 @@ int g_EndHour     = 23;
 int g_EndMinute   = 59;
 
 //+------------------------------------------------------------------+
+//| Determine supported filling mode from symbol property value      |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING SelectFillingModeFromValue(const long fillingModeValue)
+  {
+   ENUM_ORDER_TYPE_FILLING orderFilling = ORDER_FILLING_FOK;
+
+   if(fillingModeValue >= ORDER_FILLING_FOK && fillingModeValue <= ORDER_FILLING_RETURN)
+     {
+      switch((int)fillingModeValue)
+        {
+         case ORDER_FILLING_RETURN: return ORDER_FILLING_RETURN;
+         case ORDER_FILLING_IOC:    return ORDER_FILLING_IOC;
+         case ORDER_FILLING_FOK:    return ORDER_FILLING_FOK;
+         default:                   return ORDER_FILLING_FOK;
+        }
+     }
+
+   if((fillingModeValue & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   if((fillingModeValue & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   if((fillingModeValue & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
+      return ORDER_FILLING_RETURN;
+
+   return ORDER_FILLING_FOK;
+  }
+
+//+------------------------------------------------------------------+
 //| Configure order filling mode to match broker requirements        |
 //+------------------------------------------------------------------+
 void ConfigureTradeFillingMode()
   {
-   long fillingModeMask = 0;
-   if(!SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeMask))
+   long fillingModeValue = 0;
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeValue))
      {
       int err = GetLastError();
-      PrintFormat("Failed to query filling mode for %s (error %d). Defaulting to IOC.", _Symbol, err);
-      trade.SetTypeFilling(ORDER_FILLING_IOC);
+      PrintFormat("Failed to query filling mode for %s (error %d). Defaulting to FOK.", _Symbol, err);
+      g_DefaultFillingMode = ORDER_FILLING_FOK;
+      trade.SetTypeFilling(g_DefaultFillingMode);
       return;
      }
 
-   // SYMBOL_FILLING_MODE returns a bit mask of the supported filling types.
-   // Prefer RETURN (the most permissive) when available, otherwise fall back
-   // to IOC and finally to FOK. If none of the bits are set, default to IOC.
-   ENUM_ORDER_TYPE_FILLING orderFilling = ORDER_FILLING_IOC;
+   ENUM_ORDER_TYPE_FILLING orderFilling = SelectFillingModeFromValue(fillingModeValue);
 
-   if((fillingModeMask & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
-     {
-      orderFilling = ORDER_FILLING_RETURN;
-     }
-   else if((fillingModeMask & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
-     {
-      orderFilling = ORDER_FILLING_IOC;
-     }
-   else if((fillingModeMask & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
-     {
-      orderFilling = ORDER_FILLING_FOK;
-     }
-   else if(DebugLogging)
-     {
-      PrintFormat("Filling mode mask %d for %s contains no known flags. Using IOC.", fillingModeMask, _Symbol);
-     }
-
+   g_DefaultFillingMode = orderFilling;
    trade.SetTypeFilling(orderFilling);
 
    if(DebugLogging)
      {
-      PrintFormat("Using order filling mode %d for %s (mask %d).", (int)orderFilling, _Symbol, fillingModeMask);
+      PrintFormat("Using order filling mode %d for %s (value %d).", (int)orderFilling, _Symbol, fillingModeValue);
      }
   }
 
@@ -391,6 +409,8 @@ void ResetDailyFlags()
    // Reset daily breakout flags only (PDH/PDL)
    pdh_traded=false;
    pdl_traded=false;
+   g_PDH_BreakoutHandled=false;
+   g_PDL_BreakoutHandled=false;
    // Reset counters for trades and risk used
    g_TradesToday=0;
    g_DailyRiskUsed=0.0;
@@ -409,6 +429,8 @@ void ResetWeeklyFlags()
   {
    pwh_traded=false;
    pwl_traded=false;
+   g_PWH_BreakoutHandled=false;
+   g_PWL_BreakoutHandled=false;
    // Reset risk added flags for weekly levels
    g_RiskAddedPWH=false;
    g_RiskAddedPWL=false;
@@ -1183,11 +1205,19 @@ bool PlaceTrade(const bool isBuy, const double price, const double stopPrice, co
    request.tp       = takeProfitPrice;
    request.deviation= 10; // allowable slippage (points)
    request.type     = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   // Determine the broker's supported filling mode and apply it. If unavailable, fall back to RETURN.
-   int fillingMode = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
-   if(fillingMode <= 0)
-      fillingMode = ORDER_FILLING_RETURN;
-   request.type_filling = (ENUM_ORDER_TYPE_FILLING)fillingMode;
+   // Determine the broker's supported filling mode and apply it.
+   ENUM_ORDER_TYPE_FILLING requestFilling = g_DefaultFillingMode;
+   long currentFillingValue = 0;
+   if(SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, currentFillingValue))
+     {
+      requestFilling = SelectFillingModeFromValue(currentFillingValue);
+      if(requestFilling != g_DefaultFillingMode)
+        {
+         g_DefaultFillingMode = requestFilling;
+         trade.SetTypeFilling(requestFilling);
+        }
+     }
+   request.type_filling = requestFilling;
    request.type_time    = ORDER_TIME_GTC;
    request.comment      = reason;
    // Verify the requested volume is within broker constraints
@@ -1524,6 +1554,25 @@ void OnTick()
          lastClose = iClose(_Symbol, _Period, 0);
      }
 
+   double upperResetPrice = UseCandleClose ? lastClose : ask;
+   double lowerResetPrice = UseCandleClose ? lastClose : bid;
+
+   if(g_DailyLevelsValid)
+     {
+      if(g_PDH_BreakoutHandled && upperResetPrice <= g_PDH - buffer)
+         g_PDH_BreakoutHandled = false;
+      if(g_PDL_BreakoutHandled && lowerResetPrice >= g_PDL + buffer)
+         g_PDL_BreakoutHandled = false;
+     }
+
+   if(g_WeeklyLevelsValid)
+     {
+      if(g_PWH_BreakoutHandled && upperResetPrice <= g_PWH - buffer)
+         g_PWH_BreakoutHandled = false;
+      if(g_PWL_BreakoutHandled && lowerResetPrice >= g_PWL + buffer)
+         g_PWL_BreakoutHandled = false;
+     }
+
    if(!tradePlaced && canTrade && !wknd && !friLate)
      {
       bool weeklyBreakHigh = false;
@@ -1538,18 +1587,23 @@ void OnTick()
          weeklyBreakHigh = (g_WeeklyLevelsValid && ask > g_PWH + buffer);
          dailyBreakHigh  = (g_DailyLevelsValid && ask > g_PDH + buffer);
         }
-      if(UsePWH && !pwh_traded && weeklyBreakHigh)
+      if(UsePWH && !pwh_traded && !g_PWH_BreakoutHandled && weeklyBreakHigh)
         {
-         if(ExecuteBreakoutTrade(true, "PWH"))
+         g_PWH_BreakoutHandled = true;
+         g_PDH_BreakoutHandled = true;
+         bool success = ExecuteBreakoutTrade(true, "PWH");
+         if(success)
            {
             pwh_traded = true;
             pdh_traded = true;
             tradePlaced = true;
            }
         }
-      else if(!tradePlaced && UsePDH && !pdh_traded && dailyBreakHigh)
+      else if(!tradePlaced && UsePDH && !pdh_traded && !g_PDH_BreakoutHandled && dailyBreakHigh)
         {
-         if(ExecuteBreakoutTrade(true, "PDH"))
+         g_PDH_BreakoutHandled = true;
+         bool success = ExecuteBreakoutTrade(true, "PDH");
+         if(success)
            {
             pdh_traded = true;
             tradePlaced = true;
@@ -1571,18 +1625,23 @@ void OnTick()
          weeklyBreakLow = (g_WeeklyLevelsValid && bid < g_PWL - buffer);
          dailyBreakLow  = (g_DailyLevelsValid && bid < g_PDL - buffer);
         }
-      if(UsePWL && !pwl_traded && weeklyBreakLow)
+      if(UsePWL && !pwl_traded && !g_PWL_BreakoutHandled && weeklyBreakLow)
         {
-         if(ExecuteBreakoutTrade(false, "PWL"))
+         g_PWL_BreakoutHandled = true;
+         g_PDL_BreakoutHandled = true;
+         bool success = ExecuteBreakoutTrade(false, "PWL");
+         if(success)
            {
             pwl_traded = true;
             pdl_traded = true;
             tradePlaced = true;
            }
         }
-      else if(!tradePlaced && UsePDL && !pdl_traded && dailyBreakLow)
+      else if(!tradePlaced && UsePDL && !pdl_traded && !g_PDL_BreakoutHandled && dailyBreakLow)
         {
-         if(ExecuteBreakoutTrade(false, "PDL"))
+         g_PDL_BreakoutHandled = true;
+         bool success = ExecuteBreakoutTrade(false, "PDL");
+         if(success)
            {
             pdl_traded = true;
             tradePlaced = true;
