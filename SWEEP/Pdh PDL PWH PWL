@@ -165,8 +165,8 @@ int g_EndMinute   = 59;
 //+------------------------------------------------------------------+
 void ConfigureTradeFillingMode()
   {
-   long fillingModeValue = 0;
-   if(!SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeValue))
+   long fillingModeMask = 0;
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeMask))
      {
       int err = GetLastError();
       PrintFormat("Failed to query filling mode for %s (error %d). Defaulting to IOC.", _Symbol, err);
@@ -174,38 +174,33 @@ void ConfigureTradeFillingMode()
       return;
      }
 
-   ENUM_SYMBOL_FILLING_MODE fillingMode = (ENUM_SYMBOL_FILLING_MODE)fillingModeValue;
+   // SYMBOL_FILLING_MODE returns a bit mask of the supported filling types.
+   // Prefer RETURN (the most permissive) when available, otherwise fall back
+   // to IOC and finally to FOK. If none of the bits are set, default to IOC.
    ENUM_ORDER_TYPE_FILLING orderFilling = ORDER_FILLING_IOC;
 
-   switch(fillingMode)
+   if((fillingModeMask & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
      {
-      case SYMBOL_FILLING_FOK:
-         orderFilling = ORDER_FILLING_FOK;
-         break;
-      case SYMBOL_FILLING_IOC:
-         orderFilling = ORDER_FILLING_IOC;
-         break;
-      case SYMBOL_FILLING_RETURN:
-         orderFilling = ORDER_FILLING_RETURN;
-         break;
-      case SYMBOL_FILLING_ALL:
-         // Prefer IOC when multiple modes are supported to avoid broker rejections.
-         orderFilling = ORDER_FILLING_IOC;
-         break;
-      default:
-         PrintFormat("Unrecognized filling mode %d for %s. Falling back to IOC.", fillingModeValue, _Symbol);
-         orderFilling = ORDER_FILLING_IOC;
-         break;
+      orderFilling = ORDER_FILLING_RETURN;
      }
-
-   if(!trade.SetTypeFilling(orderFilling))
+   else if((fillingModeMask & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
      {
-      int err = GetLastError();
-      PrintFormat("Failed to set order filling mode %d for %s (error %d).", (int)orderFilling, _Symbol, err);
+      orderFilling = ORDER_FILLING_IOC;
+     }
+   else if((fillingModeMask & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+     {
+      orderFilling = ORDER_FILLING_FOK;
      }
    else if(DebugLogging)
      {
-      PrintFormat("Using order filling mode %d for %s.", (int)orderFilling, _Symbol);
+      PrintFormat("Filling mode mask %d for %s contains no known flags. Using IOC.", fillingModeMask, _Symbol);
+     }
+
+   trade.SetTypeFilling(orderFilling);
+
+   if(DebugLogging)
+     {
+      PrintFormat("Using order filling mode %d for %s (mask %d).", (int)orderFilling, _Symbol, fillingModeMask);
      }
   }
 
