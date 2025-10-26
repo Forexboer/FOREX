@@ -32,6 +32,22 @@
 
 #include <Trade/Trade.mqh>
 
+// Some older MetaTrader 5 builds do not expose the SYMBOL_FILLING_* bit mask
+// constants that describe which filling modes a symbol supports. The
+// following fallbacks recreate these constants from the corresponding
+// ORDER_FILLING_* enumeration values so the code can continue to compile while
+// preserving the intended behaviour when detecting the broker's supported
+// execution modes.
+#ifndef SYMBOL_FILLING_FOK
+  #define SYMBOL_FILLING_FOK      (1 << ORDER_FILLING_FOK)
+#endif
+#ifndef SYMBOL_FILLING_IOC
+  #define SYMBOL_FILLING_IOC      (1 << ORDER_FILLING_IOC)
+#endif
+#ifndef SYMBOL_FILLING_RETURN
+  #define SYMBOL_FILLING_RETURN   (1 << ORDER_FILLING_RETURN)
+#endif
+
 
 //--- enumerations for various modes
 enum EntryModeEnum { OnBreakTouch = 0, OnClose = 1 };
