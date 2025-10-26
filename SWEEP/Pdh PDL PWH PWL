@@ -191,21 +191,23 @@ ENUM_ORDER_TYPE_FILLING SelectFillingModeFromValue(const long fillingModeValue)
   {
    ENUM_ORDER_TYPE_FILLING orderFilling = ORDER_FILLING_FOK;
 
-   if(fillingModeValue >= ORDER_FILLING_FOK && fillingModeValue <= ORDER_FILLING_RETURN)
-     {
-      switch((int)fillingModeValue)
-        {
-         case ORDER_FILLING_RETURN: return ORDER_FILLING_RETURN;
-         case ORDER_FILLING_IOC:    return ORDER_FILLING_IOC;
-         case ORDER_FILLING_FOK:    return ORDER_FILLING_FOK;
-         default:                   return ORDER_FILLING_FOK;
-        }
-     }
-
-   if((fillingModeValue & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+   // Some brokers still return a plain enumeration value (0, 1 or 2) instead of a bit mask.
+   // Handle those explicitly before examining bit flags so we can work with both formats.
+   if(fillingModeValue == ORDER_FILLING_FOK)
       return ORDER_FILLING_FOK;
+   if(fillingModeValue == ORDER_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   if(fillingModeValue == ORDER_FILLING_RETURN)
+      return ORDER_FILLING_RETURN;
+
+   // When a mask is provided we prefer IOC (most widely supported for forex/CFD symbols),
+   // then fall back to FOK and finally RETURN. Returning an explicitly supported mode prevents
+   // the EA from passing an invalid mask value to trade requests, which previously resulted in
+   // "Unsupported filling mode" errors.
    if((fillingModeValue & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
       return ORDER_FILLING_IOC;
+   if((fillingModeValue & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
    if((fillingModeValue & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
       return ORDER_FILLING_RETURN;
 
