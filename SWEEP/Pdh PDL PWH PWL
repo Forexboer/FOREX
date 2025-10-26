@@ -178,41 +178,56 @@ int              g_TZOffsetMinutes = 0;            // Offset for local timezone 
 
 ENUM_ORDER_TYPE_FILLING g_DefaultFillingMode = ORDER_FILLING_FOK; // Default trade filling mode
 
+//+------------------------------------------------------------------+
+//| Helper to add a filling candidate without duplicates             |
+//+------------------------------------------------------------------+
+void AddFillingCandidate(const ENUM_ORDER_TYPE_FILLING candidate,
+                         ENUM_ORDER_TYPE_FILLING &candidates[],
+                         int &count)
+  {
+   for(int i=0; i<count; ++i)
+     {
+      if(candidates[i] == candidate)
+         return;
+     }
+
+   candidates[count++] = candidate;
+  }
+
+//+------------------------------------------------------------------+
+//| Populate an ordered list of supported filling modes              |
+//+------------------------------------------------------------------+
+int BuildFillingModeCandidates(const long fillingModeValue,
+                               ENUM_ORDER_TYPE_FILLING &candidates[])
+  {
+   int count = 0;
+
+   if(fillingModeValue == ORDER_FILLING_FOK ||
+      fillingModeValue == ORDER_FILLING_IOC ||
+      fillingModeValue == ORDER_FILLING_RETURN)
+     {
+      AddFillingCandidate((ENUM_ORDER_TYPE_FILLING)fillingModeValue, candidates, count);
+      return count;
+     }
+
+   // Prefer IOC for forex/CFD symbols, then FOK, then RETURN.
+   if((fillingModeValue & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      AddFillingCandidate(ORDER_FILLING_IOC, candidates, count);
+   if((fillingModeValue & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      AddFillingCandidate(ORDER_FILLING_FOK, candidates, count);
+   if((fillingModeValue & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
+      AddFillingCandidate(ORDER_FILLING_RETURN, candidates, count);
+
+   return count;
+  }
+
 //--- parsed trading hours variables
 int g_StartHour   = 0;
 int g_StartMinute = 0;
 int g_EndHour     = 23;
 int g_EndMinute   = 59;
 
-//+------------------------------------------------------------------+
-//| Determine supported filling mode from symbol property value      |
-//+------------------------------------------------------------------+
-ENUM_ORDER_TYPE_FILLING SelectFillingModeFromValue(const long fillingModeValue)
-  {
-   ENUM_ORDER_TYPE_FILLING orderFilling = ORDER_FILLING_FOK;
 
-   // Some brokers still return a plain enumeration value (0, 1 or 2) instead of a bit mask.
-   // Handle those explicitly before examining bit flags so we can work with both formats.
-   if(fillingModeValue == ORDER_FILLING_FOK)
-      return ORDER_FILLING_FOK;
-   if(fillingModeValue == ORDER_FILLING_IOC)
-      return ORDER_FILLING_IOC;
-   if(fillingModeValue == ORDER_FILLING_RETURN)
-      return ORDER_FILLING_RETURN;
-
-   // When a mask is provided we prefer IOC (most widely supported for forex/CFD symbols),
-   // then fall back to FOK and finally RETURN. Returning an explicitly supported mode prevents
-   // the EA from passing an invalid mask value to trade requests, which previously resulted in
-   // "Unsupported filling mode" errors.
-   if((fillingModeValue & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
-      return ORDER_FILLING_IOC;
-   if((fillingModeValue & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
-      return ORDER_FILLING_FOK;
-   if((fillingModeValue & SYMBOL_FILLING_RETURN) == SYMBOL_FILLING_RETURN)
-      return ORDER_FILLING_RETURN;
-
-   return ORDER_FILLING_FOK;
-  }
 
 //+------------------------------------------------------------------+
 //| Configure order filling mode to match broker requirements        |
@@ -220,23 +235,33 @@ ENUM_ORDER_TYPE_FILLING SelectFillingModeFromValue(const long fillingModeValue)
 void ConfigureTradeFillingMode()
   {
    long fillingModeValue = 0;
-   if(!SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeValue))
+   ENUM_ORDER_TYPE_FILLING candidates[3];
+   int candidateCount = 0;
+
+   if(SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, fillingModeValue))
+     {
+      candidateCount = BuildFillingModeCandidates(fillingModeValue, candidates);
+     }
+   else
      {
       int err = GetLastError();
       PrintFormat("Failed to query filling mode for %s (error %d). Defaulting to FOK.", _Symbol, err);
-      g_DefaultFillingMode = ORDER_FILLING_FOK;
-      trade.SetTypeFilling(g_DefaultFillingMode);
-      return;
      }
 
-   ENUM_ORDER_TYPE_FILLING orderFilling = SelectFillingModeFromValue(fillingModeValue);
+   if(candidateCount == 0)
+     {
+      // Fallback to IOC, FOK, RETURN priority when broker capabilities are unknown.
+      candidates[candidateCount++] = ORDER_FILLING_IOC;
+      AddFillingCandidate(ORDER_FILLING_FOK, candidates, candidateCount);
+      AddFillingCandidate(ORDER_FILLING_RETURN, candidates, candidateCount);
+     }
 
-   g_DefaultFillingMode = orderFilling;
-   trade.SetTypeFilling(orderFilling);
+   g_DefaultFillingMode = candidates[0];
+   trade.SetTypeFilling(g_DefaultFillingMode);
 
    if(DebugLogging)
      {
-      PrintFormat("Using order filling mode %d for %s (value %d).", (int)orderFilling, _Symbol, fillingModeValue);
+      PrintFormat("Using order filling mode %d for %s (value %d).", (int)g_DefaultFillingMode, _Symbol, fillingModeValue);
      }
   }
 
@@ -1193,60 +1218,89 @@ bool ExecuteBreakoutTrade(const bool isBuy, const string reason)
 //+------------------------------------------------------------------+
 //| Place a market order                                            |
 //+------------------------------------------------------------------+
-bool PlaceTrade(const bool isBuy, const double price, const double stopPrice, const double takeProfitPrice, const double volume, const string reason)
+bool PlaceTrade(const bool isBuy, const double price, const double stopPrice, const double takeProfitPrice, const double volume,
+ const string reason)
   {
-   MqlTradeRequest request;
-   MqlTradeResult  result;
-   ZeroMemory(request);
-   ZeroMemory(result);
-   request.action   = TRADE_ACTION_DEAL;
-   request.symbol   = _Symbol;
-   request.volume   = volume;
-   request.price    = isBuy ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
-   request.sl       = stopPrice;
-   request.tp       = takeProfitPrice;
-   request.deviation= 10; // allowable slippage (points)
-   request.type     = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   // Determine the broker's supported filling mode and apply it.
-   ENUM_ORDER_TYPE_FILLING requestFilling = g_DefaultFillingMode;
+   MqlTradeRequest baseRequest;
+   ZeroMemory(baseRequest);
+   baseRequest.action    = TRADE_ACTION_DEAL;
+   baseRequest.symbol    = _Symbol;
+   baseRequest.volume    = volume;
+   baseRequest.price     = isBuy ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   baseRequest.sl        = stopPrice;
+   baseRequest.tp        = takeProfitPrice;
+   baseRequest.deviation = 10; // allowable slippage (points)
+   baseRequest.type      = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   baseRequest.type_time = ORDER_TIME_GTC;
+   baseRequest.comment   = reason;
+
+   // Determine supported filling modes and prioritise the default one.
+   ENUM_ORDER_TYPE_FILLING fillingCandidates[5];
+   int candidateCount = 0;
+   AddFillingCandidate(g_DefaultFillingMode, fillingCandidates, candidateCount);
+
    long currentFillingValue = 0;
    if(SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE, currentFillingValue))
      {
-      requestFilling = SelectFillingModeFromValue(currentFillingValue);
-      if(requestFilling != g_DefaultFillingMode)
-        {
-         g_DefaultFillingMode = requestFilling;
-         trade.SetTypeFilling(requestFilling);
-        }
+      ENUM_ORDER_TYPE_FILLING symbolCandidates[3];
+      int symbolCount = BuildFillingModeCandidates(currentFillingValue, symbolCandidates);
+      for(int i=0; i<symbolCount; ++i)
+         AddFillingCandidate(symbolCandidates[i], fillingCandidates, candidateCount);
      }
-   request.type_filling = requestFilling;
-   request.type_time    = ORDER_TIME_GTC;
-   request.comment      = reason;
-   // Verify the requested volume is within broker constraints
-   if(!trade.CheckVolume(request.symbol, request.volume, request.price, request.type))
-      return false;
-   bool success=OrderSend(request,result);
-   if(success && result.retcode==10009/*deal placed*/)
+
+   if(candidateCount == 0)
      {
-      g_LastTradeTime=TimeCurrent();
-      g_TradesToday++;
-      // Increment per‑direction counters
-      if(isBuy)
-         g_BuyTradesToday++;
-      else
-         g_SellTradesToday++;
-      // Compute risk used based on distance in price. Convert the price difference to number of ticks
-      // and multiply by tick value and volume to get monetary risk.
-      double ticksize  = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
-      double tickvalue = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
-      if(ticksize>0.0 && tickvalue>0.0)
-        {
-         double ticks = fabs(price - stopPrice) / ticksize;
-         double riskAmount = ticks * tickvalue * volume;
-         g_DailyRiskUsed += riskAmount;
-        }
-      return true;
+      // Absolute fallback when the platform does not expose capabilities.
+      AddFillingCandidate(ORDER_FILLING_IOC, fillingCandidates, candidateCount);
+      AddFillingCandidate(ORDER_FILLING_FOK, fillingCandidates, candidateCount);
+      AddFillingCandidate(ORDER_FILLING_RETURN, fillingCandidates, candidateCount);
      }
+
+   // Verify the requested volume is within broker constraints
+   if(!trade.CheckVolume(baseRequest.symbol, baseRequest.volume, baseRequest.price, baseRequest.type))
+      return false;
+
+   for(int i=0; i<candidateCount; ++i)
+     {
+      MqlTradeRequest request = baseRequest;
+      request.type_filling = fillingCandidates[i];
+      trade.SetTypeFilling(request.type_filling);
+
+      MqlTradeResult result;
+      ZeroMemory(result);
+
+      bool success = OrderSend(request, result);
+      if(success && result.retcode == TRADE_RETCODE_DONE)
+        {
+         g_DefaultFillingMode = request.type_filling;
+         g_LastTradeTime      = TimeCurrent();
+         g_TradesToday++;
+         // Increment per-direction counters
+         if(isBuy)
+            g_BuyTradesToday++;
+         else
+            g_SellTradesToday++;
+         // Compute risk used based on distance in price. Convert the price difference to number of ticks
+         // and multiply by tick value and volume to get monetary risk.
+         double ticksize  = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+         double tickvalue = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_VALUE);
+         if(ticksize>0.0 && tickvalue>0.0)
+           {
+            double ticks = fabs(price - stopPrice) / ticksize;
+            double riskAmount = ticks * tickvalue * volume;
+            g_DailyRiskUsed += riskAmount;
+           }
+         return true;
+        }
+
+      // If the broker rejects the filling mode, try the next supported option.
+      if(result.retcode == TRADE_RETCODE_INVALID_FILL ||
+         (result.retcode == TRADE_RETCODE_REJECT && i < candidateCount - 1))
+         continue;
+
+      break;
+     }
+
    return false;
   }
 
