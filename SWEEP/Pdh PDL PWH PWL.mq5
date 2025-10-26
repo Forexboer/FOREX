@@ -37,6 +37,7 @@ input ENUM_SL_MODE      SLMode                   = SL_MODE_ATR;
 input ENUM_TP_MODE      TPMode                   = TP_MODE_RR;
 input double            RiskReward               = 1.5;
 input bool              IncludeCommissionsInRisk = true;
+input double            CommissionPerLot         = 0.0;
 input string            TradingHours             = "07:00-22:00";
 
 input ENUM_TIMEFRAMES   ATRTimeframe             = PERIOD_H1;
@@ -303,8 +304,8 @@ bool CheckTradingWindow()
    if(g_tradingStartMinutes == g_tradingEndMinutes)
       return(true);
 
-   datetime now = TimeCurrent();
-   int minutes  = TimeHour(now) * 60 + TimeMinute(now);
+   datetime current_time = TimeCurrent();
+   int minutes  = TimeHour(current_time) * 60 + TimeMinute(current_time);
 
    if(g_tradingStartMinutes <= g_tradingEndMinutes)
       return(minutes >= g_tradingStartMinutes && minutes <= g_tradingEndMinutes);
@@ -503,11 +504,15 @@ double CalculateVolume(double riskDistance)
    double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPercentPerTrade / 100.0;
 
    double commissionPerLot = 0.0;
+   static bool commissionWarningShown = false;
    if(IncludeCommissionsInRisk)
      {
-      double commission = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_COMMISSION);
-      if(commission > 0)
-         commissionPerLot = commission;
+      commissionPerLot = MathMax(CommissionPerLot, 0.0);
+      if(commissionPerLot == 0.0 && !commissionWarningShown)
+        {
+         Print("CommissionPerLot is zero while IncludeCommissionsInRisk is enabled. No commission will be included in risk calculations.");
+         commissionWarningShown = true;
+        }
      }
 
    double lossPerLot = riskDistance / tickSize * tickValue;
@@ -555,7 +560,7 @@ double GetPipSize()
 
 bool IsHighImpactNewsNear(int beforeMinutes, int afterMinutes)
   {
-   datetime now = TimeCurrent();
+   datetime current_time = TimeCurrent();
    for(int i = 0; i < ArraySize(g_newsEvents); ++i)
      {
       if(!ImpactAllowed(g_newsEvents[i].impact))
@@ -568,14 +573,14 @@ bool IsHighImpactNewsNear(int beforeMinutes, int afterMinutes)
       if(eventTime == 0)
          continue;
 
-      if(now <= eventTime)
+      if(current_time <= eventTime)
         {
-         if((eventTime - now) <= beforeMinutes * 60)
+         if((eventTime - current_time) <= beforeMinutes * 60)
             return(true);
         }
       else
         {
-         if((now - eventTime) <= afterMinutes * 60)
+         if((current_time - eventTime) <= afterMinutes * 60)
             return(true);
         }
      }
@@ -587,17 +592,17 @@ void DownloadNews(bool force)
    if(!NewsFilterEnabled)
       return;
 
-   datetime now = TimeCurrent();
-   if(!force && (now - g_lastNewsDownload) < NewsRefreshMinutes * 60)
+   datetime current_time = TimeCurrent();
+   if(!force && (current_time - g_lastNewsDownload) < NewsRefreshMinutes * 60)
       return;
 
-   char  requestBody[];
+   uchar requestBody[];
    uchar response[];
    string headers;
    ArrayResize(requestBody, 0);
 
    ResetLastError();
-   int status = WebRequest("GET", NEWS_URL, "", 5000, requestBody, 0, response, headers);
+   int status = WebRequest("GET", NEWS_URL, "", 5000, requestBody, response, headers);
    if(status != 200)
      {
       int error = GetLastError();
@@ -613,7 +618,7 @@ void DownloadNews(bool force)
      }
 
    ParseNewsXML(xml);
-   g_lastNewsDownload = now;
+   g_lastNewsDownload = current_time;
   }
 
 void ParseNewsXML(const string xml)
@@ -715,11 +720,11 @@ string NormalizeSymbol(const string symbol)
    string upper = ToUpper(symbol);
    string result = "";
    for(int i = 0; i < StringLen(upper); ++i)
-     {
-      uchar ch = (uchar)StringGetCharacter(upper, i);
-      if((ch >= 'A' && ch <= 'Z'))
-         result += (char)ch;
-     }
+      {
+       uchar ch = (uchar)StringGetCharacter(upper, i);
+       if((ch >= 'A' && ch <= 'Z'))
+          result += CharToString((int)ch);
+      }
    return(result);
   }
 
