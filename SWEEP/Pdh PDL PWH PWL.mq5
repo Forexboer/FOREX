@@ -708,16 +708,16 @@ void ParseNewsXML(const string xml)
 
       string impact = Trim(ExtractTagValue(block, "impact"));
       string country = Trim(ExtractTagValue(block, "country"));
-      string timestamp = Trim(ExtractTagValue(block, "timestamp"));
+      string timestamp_str = Trim(ExtractTagValue(block, "timestamp"));
       string title = SanitizeText(StripCData(Trim(ExtractTagValue(block, "title"))));
 
-      if(StringLen(timestamp) == 0 || StringLen(country) == 0)
+      if(StringLen(timestamp_str) == 0 || StringLen(country) == 0)
          continue;
 
       if(!ImpactAllowed(impact))
          continue;
 
-      long timestampValue = StringToLong(timestamp);
+      long timestampValue = StringToLong(timestamp_str);
       if(timestampValue <= 0)
          continue;
 
@@ -818,8 +818,8 @@ string NormalizeSymbol(const string symbol)
    for(int i = 0; i < StringLen(upper); ++i)
       {
        int ch = (int)StringGetCharacter(upper, i);
-       if(ch >= 'A' && ch <= 'Z')
-          result += CharToString(ch);
+         if(ch >= 'A' && ch <= 'Z')
+            result += CharToString((uchar)ch);
       }
    return(result);
   }
@@ -921,7 +921,7 @@ void UpdateNewsDashboardText()
    int afterWindow = (int)MathMax((double)NewsWindowAfterMinutes, 0.0);
    for(int i = 0; i < total; ++i)
      {
-      const NewsEvent &event = g_newsEvents[i];
+      const NewsEvent event = g_newsEvents[i];
       if(event.time == 0)
          continue;
       if(!MatchesSymbolCurrencies(_Symbol, event.currency))
