@@ -717,11 +717,11 @@ void ParseNewsXML(const string xml)
       if(!ImpactAllowed(impact))
          continue;
 
-      long timestampValue = StringToLong(timestamp_str);
+      long timestampValue = (long)StringToInteger(timestamp_str);
       if(timestampValue <= 0)
          continue;
 
-      datetime eventTime = (datetime)(timestampValue + brokerOffset);
+      datetime eventTime = (datetime)(timestampValue + (long)brokerOffset);
       int newIndex = ArraySize(g_newsEvents);
       ArrayResize(g_newsEvents, newIndex + 1);
       g_newsEvents[newIndex].impact = impact;
@@ -816,11 +816,11 @@ string NormalizeSymbol(const string symbol)
    string upper = ToUpper(symbol);
    string result = "";
    for(int i = 0; i < StringLen(upper); ++i)
-      {
-       int ch = (int)StringGetCharacter(upper, i);
-         if(ch >= 'A' && ch <= 'Z')
-            result += CharToString((uchar)ch);
-      }
+     {
+      ushort ch = StringGetCharacter(upper, i);
+      if(ch >= 'A' && ch <= 'Z')
+         result += CharToString(ch);
+     }
    return(result);
   }
 
@@ -921,12 +921,12 @@ void UpdateNewsDashboardText()
    int afterWindow = (int)MathMax((double)NewsWindowAfterMinutes, 0.0);
    for(int i = 0; i < total; ++i)
      {
-      const NewsEvent event = g_newsEvents[i];
-      if(event.time == 0)
+      datetime eventTime = g_newsEvents[i].time;
+      if(eventTime == 0)
          continue;
-      if(!MatchesSymbolCurrencies(_Symbol, event.currency))
+      if(!MatchesSymbolCurrencies(_Symbol, g_newsEvents[i].currency))
          continue;
-      if(event.time + afterWindow * 60 < now)
+      if(eventTime + afterWindow * 60 < now)
          continue;
       indices[count++] = i;
      }
