@@ -40,6 +40,11 @@ input bool              IncludeCommissionsInRisk = true;
 input double            CommissionPerLot         = 0.0;
 input string            TradingHours             = "07:00-22:00";
 
+input bool              ShowPDH                  = true;
+input bool              ShowPDL                  = true;
+input bool              ShowPWH                  = true;
+input bool              ShowPWL                  = true;
+
 input ENUM_TIMEFRAMES   ATRTimeframe             = PERIOD_H1;
 input int               ATRPeriod                = 14;
 input double            ATRMultiplier            = 1.8;
@@ -265,10 +270,25 @@ void ResetWeeklyFlags()
 
 void UpdateLevelObjects()
   {
-   UpdateLevelObject("PDH_Level", g_PDH, clrDodgerBlue, STYLE_SOLID);
-   UpdateLevelObject("PDL_Level", g_PDL, clrOrangeRed, STYLE_SOLID);
-   UpdateLevelObject("PWH_Level", g_PWH, clrMediumSeaGreen, STYLE_DASH);
-   UpdateLevelObject("PWL_Level", g_PWL, clrCrimson, STYLE_DASH);
+   if(ShowPDH)
+      UpdateLevelObject("PDH_Level", g_PDH, clrDodgerBlue, STYLE_SOLID);
+   else
+      ObjectDelete(ChartID(), "PDH_Level");
+
+   if(ShowPDL)
+      UpdateLevelObject("PDL_Level", g_PDL, clrOrangeRed, STYLE_SOLID);
+   else
+      ObjectDelete(ChartID(), "PDL_Level");
+
+   if(ShowPWH)
+      UpdateLevelObject("PWH_Level", g_PWH, clrMediumSeaGreen, STYLE_DASH);
+   else
+      ObjectDelete(ChartID(), "PWH_Level");
+
+   if(ShowPWL)
+      UpdateLevelObject("PWL_Level", g_PWL, clrCrimson, STYLE_DASH);
+   else
+      ObjectDelete(ChartID(), "PWL_Level");
   }
 
 void UpdateLevelObject(const string name, double price, color clr, ENUM_LINE_STYLE style)
