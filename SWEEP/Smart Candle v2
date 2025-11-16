@@ -4,6 +4,13 @@
 #property strict
 
 #include <Trade\Trade.mqh>
+#include <Object.mqh>               // Added missing include to match dependencies
+#include <StdLibErr.mqh>             // Added missing include to match dependencies
+#include <OrderInfo.mqh>             // Added missing include to match dependencies
+#include <HistoryOrderInfo.mqh>      // Added missing include to match dependencies
+#include <PositionInfo.mqh>          // Added missing include to match dependencies
+#include <DealInfo.mqh>              // Added missing include to match dependencies
+#include <Calendar\Calendar.mqh>     // Added for calendar event types used in news filter
 
 //--- enumerations
 enum ENUM_SL_MODE
@@ -239,7 +246,7 @@ void TryPlaceTrade()
      }
 
    RefreshRates();
-   double entry_price = (g_decisive.direction > 0) ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double entry_price = (g_decisive.direction > 0) ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID); // Fixed syntax error from stray characters
 
    double sl_price = 0.0;
    double tp_price = 0.0;
@@ -544,14 +551,14 @@ bool IsNewsBlockingCurrency(const string currency,const datetime now_time)
    datetime from_time = now_time - (InpNewsBlockBeforeMin + 60) * 60;
    datetime to_time   = now_time + (InpNewsBlockAfterMin + 60) * 60;
 
-   MqlCalendarEvent events[];
+   MqlCalendarEvent events[]; // Ensure events array is declared for CalendarEventByFilter
    int total = CalendarEventByFilter(events,from_time,to_time,NULL,currency);
    if(total <= 0)
       return(false);
 
    for(int i = 0; i < total; ++i)
      {
-      ENUM_CALENDAR_IMPORTANCE imp = events[i].importance;
+      ENUM_CALENDAR_IMPORTANCE imp = (ENUM_CALENDAR_IMPORTANCE)events[i].importance; // Cast to expected enum to avoid conversion error
       if(InpHighImpactNewsOnly)
         {
          if(imp != CALENDAR_IMPORTANCE_HIGH)
