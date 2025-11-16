@@ -28,7 +28,6 @@ struct NewsEvent
    datetime time;
    string   currency;
    string   impact;
-   string   title;
   };
 
 input int               MagicNumber              = 20241013;
@@ -71,8 +70,6 @@ CTrade                  trade;
 
 NewsEvent               g_newsEvents[];
 datetime                g_lastNewsDownload       = 0;
-bool                    g_newsPauseActive        = false;
-string                  g_lastNewsErrorMessage   = "";
 
 double                  g_PDH = 0.0;
 double                  g_PDL = 0.0;
@@ -95,7 +92,6 @@ int                     g_tradingEndMinutes   = -1;
 int                     g_atrHandle           = INVALID_HANDLE;
 
 const string            NEWS_URL               = "http://nfs.faireconomy.media/ff_calendar_thisweek.xml";
-const string            NEWS_DASHBOARD_OBJECT  = "NewsDashboard";
 
 //--- helper forward declarations
 void   ApplyChartStyle();
@@ -123,15 +119,10 @@ bool   IsHighImpactNewsNear(int beforeMinutes, int afterMinutes);
 void   DownloadNews(bool force);
 void   ParseNewsXML(const string xml);
 string ExtractTagValue(const string &source, const string &tag);
-string StripCData(const string text);
-string SanitizeText(const string text);
 string ToUpper(const string text);
 string Trim(const string text);
 string NormalizeSymbol(const string symbol);
 void   Log(const string message);
-void   EnsureNewsDashboard();
-void   UpdateNewsDashboardText();
-string FormatEventLine(const NewsEvent &event);
 
 //--- initialization
 int OnInit()
@@ -150,10 +141,8 @@ int OnInit()
       return(INIT_FAILED);
      }
 
-   EnsureNewsDashboard();
    EventSetTimer(60);
    DownloadNews(true);
-   UpdateNewsDashboardText();
    return(INIT_SUCCEEDED);
   }
 
@@ -162,35 +151,22 @@ void OnDeinit(const int reason)
    EventKillTimer();
    if(g_atrHandle != INVALID_HANDLE)
       IndicatorRelease(g_atrHandle);
-   ObjectDelete(ChartID(), NEWS_DASHBOARD_OBJECT);
    DeleteLevelObjects();
   }
 
 void OnTimer()
   {
    DownloadNews(false);
-   UpdateNewsDashboardText();
   }
 
 void OnTick()
   {
-   EnsureNewsDashboard();
    RefreshLevels(false, false);
-
-   bool newsPause = false;
-   if(NewsFilterEnabled)
-      newsPause = ShouldBlockForNews();
-
-   if(newsPause != g_newsPauseActive)
-     {
-      g_newsPauseActive = newsPause;
-      UpdateNewsDashboardText();
-     }
 
    if(!CheckTradingWindow())
       return;
 
-   if(newsPause)
+   if(NewsFilterEnabled && ShouldBlockForNews())
       return;
 
    CheckBreakouts();
@@ -641,12 +617,8 @@ bool IsHighImpactNewsNear(int beforeMinutes, int afterMinutes)
 
 void DownloadNews(bool force)
   {
-   EnsureNewsDashboard();
    if(!NewsFilterEnabled)
-     {
-      g_lastNewsErrorMessage = "";
       return;
-     }
 
    datetime current_time = TimeCurrent();
    if(!force && (current_time - g_lastNewsDownload) < NewsRefreshMinutes * 60)
@@ -663,7 +635,6 @@ void DownloadNews(bool force)
      {
       int error = GetLastError();
       Print("WebRequest failed. Status=", status, " error=", error);
-      g_lastNewsErrorMessage = "News download failed (" + IntegerToString(status) + ")";
       return;
      }
 
@@ -671,24 +642,16 @@ void DownloadNews(bool force)
    if(StringLen(xml) == 0)
      {
       Print("News download returned empty response");
-      g_lastNewsErrorMessage = "News download returned empty response";
       return;
      }
 
    ParseNewsXML(xml);
-   g_lastNewsErrorMessage = "";
    g_lastNewsDownload = current_time;
   }
 
 void ParseNewsXML(const string xml)
   {
    ArrayResize(g_newsEvents, 0);
-   datetime gmtNow = TimeGMT();
-   int brokerOffset = 0;
-   if(gmtNow != 0)
-      brokerOffset = (int)(TimeCurrent() - gmtNow);
-   else
-      brokerOffset = 0;
    int position = 0;
    while(true)
      {
@@ -708,26 +671,20 @@ void ParseNewsXML(const string xml)
 
       string impact = Trim(ExtractTagValue(block, "impact"));
       string country = Trim(ExtractTagValue(block, "country"));
-      string timestamp_str = Trim(ExtractTagValue(block, "timestamp"));
-      string title = SanitizeText(StripCData(Trim(ExtractTagValue(block, "title"))));
+      string timestamp = Trim(ExtractTagValue(block, "timestamp"));
 
-      if(StringLen(timestamp_str) == 0 || StringLen(country) == 0)
+      if(StringLen(timestamp) == 0 || StringLen(country) == 0)
          continue;
 
       if(!ImpactAllowed(impact))
          continue;
 
-      long timestampValue = (long)StringToInteger(timestamp_str);
-      if(timestampValue <= 0)
-         continue;
-
-      datetime eventTime = (datetime)(timestampValue + (long)brokerOffset);
+      datetime eventTime = (datetime)StringToInteger(timestamp);
       int newIndex = ArraySize(g_newsEvents);
       ArrayResize(g_newsEvents, newIndex + 1);
       g_newsEvents[newIndex].impact = impact;
-      g_newsEvents[newIndex].currency = Trim(ToUpper(country));
+      g_newsEvents[newIndex].currency = country;
       g_newsEvents[newIndex].time = eventTime;
-      g_newsEvents[newIndex].title = title;
      }
   }
 
@@ -743,31 +700,6 @@ string ExtractTagValue(const string &source, const string &tag)
    if(end == -1)
       return("");
    return(StringSubstr(source, start, end - start));
-  }
-
-string StripCData(const string text)
-  {
-   string result = Trim(text);
-   string prefix = "<![CDATA[";
-   string suffix = "]]>";
-   int prefixLen = StringLen(prefix);
-   int suffixLen = StringLen(suffix);
-   if(StringLen(result) >= prefixLen + suffixLen && StringSubstr(result, 0, prefixLen) == prefix)
-     {
-      result = StringSubstr(result, prefixLen);
-      int resultLen = StringLen(result);
-      if(resultLen >= suffixLen && StringSubstr(result, resultLen - suffixLen, suffixLen) == suffix)
-         result = StringSubstr(result, 0, resultLen - suffixLen);
-     }
-   return(result);
-  }
-
-string SanitizeText(const string text)
-  {
-   string sanitized = text;
-   StringReplace(sanitized, "\r", " ");
-   StringReplace(sanitized, "\n", " ");
-   return(Trim(sanitized));
   }
 
 bool ImpactAllowed(const string impact)
@@ -816,11 +748,11 @@ string NormalizeSymbol(const string symbol)
    string upper = ToUpper(symbol);
    string result = "";
    for(int i = 0; i < StringLen(upper); ++i)
-     {
-      ushort ch = StringGetCharacter(upper, i);
-      if(ch >= 'A' && ch <= 'Z')
-         result += CharToString(ch);
-     }
+      {
+       int ch = (int)StringGetCharacter(upper, i);
+       if(ch >= 'A' && ch <= 'Z')
+          result += CharToString(ch);
+      }
    return(result);
   }
 
@@ -849,117 +781,6 @@ bool MatchesSymbolCurrencies(const string symbol, const string eventCurrency)
      }
 
    return(false);
-  }
-
-void EnsureNewsDashboard()
-  {
-   long chartID = ChartID();
-   if(ObjectFind(chartID, NEWS_DASHBOARD_OBJECT) >= 0)
-      return;
-
-   if(!ObjectCreate(chartID, NEWS_DASHBOARD_OBJECT, OBJ_LABEL, 0, 0, 0))
-      return;
-
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_XDISTANCE, 10);
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_YDISTANCE, 10);
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_COLOR, ChartForegroundColor);
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_FONTSIZE, 9);
-   ObjectSetString(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_FONT, "Arial");
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_BACK, false);
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_HIDDEN, true);
-   ObjectSetString(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_TEXT, "Loading news...");
-  }
-
-string FormatEventLine(const NewsEvent &event)
-  {
-   string timeStr = TimeToString(event.time, TIME_MINUTES);
-   string impact = Trim(event.impact);
-   string title = event.title;
-   if(StringLen(title) == 0)
-      title = "(No title)";
-   if(StringLen(title) > 60)
-      title = StringSubstr(title, 0, 57) + "...";
-
-   return(timeStr + " " + event.currency + " (" + impact + ") " + title);
-  }
-
-void UpdateNewsDashboardText()
-  {
-   EnsureNewsDashboard();
-   long chartID = ChartID();
-   if(ObjectFind(chartID, NEWS_DASHBOARD_OBJECT) < 0)
-      return;
-
-   string text = "Upcoming news for " + _Symbol + ":\n";
-
-   if(!NewsFilterEnabled)
-      text += "News filter disabled\n";
-   else if(g_newsPauseActive)
-      text += "Trading paused due to high-impact news\n";
-
-   if(StringLen(g_lastNewsErrorMessage) > 0)
-     {
-      text += g_lastNewsErrorMessage;
-      ObjectSetString(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_TEXT, text);
-      return;
-     }
-
-   datetime now = TimeCurrent();
-   int total = ArraySize(g_newsEvents);
-   if(total == 0)
-     {
-      text += "No news events available";
-      ObjectSetString(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_TEXT, text);
-      return;
-     }
-
-   int indices[];
-   ArrayResize(indices, total);
-   int count = 0;
-   int afterWindow = (int)MathMax((double)NewsWindowAfterMinutes, 0.0);
-   for(int i = 0; i < total; ++i)
-     {
-      datetime eventTime = g_newsEvents[i].time;
-      if(eventTime == 0)
-         continue;
-      if(!MatchesSymbolCurrencies(_Symbol, g_newsEvents[i].currency))
-         continue;
-      if(eventTime + afterWindow * 60 < now)
-         continue;
-      indices[count++] = i;
-     }
-
-   if(count == 0)
-     {
-      text += "No relevant high-impact news";
-      ObjectSetString(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_TEXT, text);
-      return;
-     }
-
-   for(int i = 0; i < count - 1; ++i)
-     {
-      for(int j = i + 1; j < count; ++j)
-        {
-         if(g_newsEvents[indices[j]].time < g_newsEvents[indices[i]].time)
-           {
-            int temp = indices[i];
-            indices[i] = indices[j];
-            indices[j] = temp;
-           }
-        }
-     }
-
-   int maxLines = (int)MathMin((double)count, 5.0);
-   for(int i = 0; i < maxLines; ++i)
-     {
-      text += FormatEventLine(g_newsEvents[indices[i]]);
-      if(i < maxLines - 1)
-         text += "\n";
-     }
-
-   ObjectSetString(chartID, NEWS_DASHBOARD_OBJECT, OBJPROP_TEXT, text);
   }
 
 void Log(const string message)
