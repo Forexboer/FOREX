@@ -23,6 +23,13 @@ enum ENUM_TP_MODE
    TP_MODE_FIXED_PIPS = 1
   };
 
+enum ENUM_TRAILING_MODE
+  {
+   TRAILING_MODE_STEP_PIPS = 0,
+   TRAILING_MODE_PREV_CANDLE_HL = 1,
+   TRAILING_MODE_ATR_CANDLE = 2
+  };
+
 struct NewsEvent
   {
    datetime time;
@@ -53,6 +60,13 @@ input int               FixedTPPips              = 75;
 input double            BufferPips               = 1.0;
 input bool              PlotLevels               = true;
 input int               NewsRefreshMinutes       = 15;
+
+// trailing-stop inputs
+input ENUM_TRAILING_MODE TrailingMode            = TRAILING_MODE_PREV_CANDLE_HL; // STEP_PIPS, PREV_CANDLE_HL, ATR_CANDLE
+input ENUM_TIMEFRAMES    TrailingTimeframe       = PERIOD_CURRENT;               // timeframe used for candle/ATR data
+input double             StepPips                = 10.0;                         // step distance in pips for STEP_PIPS mode
+input double             OffsetPips              = 2.0;                          // additional buffer in pips for candle mode
+input double             ATRExt                  = 1.0;                          // ATR multiplier when ATR mode is active
 
 input color             ChartBackgroundColor     = clrWhite;
 input color             ChartForegroundColor     = clrBlack;
@@ -85,6 +99,7 @@ datetime                g_lastDailyReference = 0;
 datetime                g_lastWeeklyReference = 0;
 
 datetime                g_lastBarSignalTime[4];
+datetime                g_lastTrailingBarTime  = 0;
 
 int                     g_tradingStartMinutes = -1;
 int                     g_tradingEndMinutes   = -1;
@@ -123,6 +138,7 @@ string ToUpper(const string text);
 string Trim(const string text);
 string NormalizeSymbol(const string symbol);
 void   Log(const string message);
+void   ApplyTrailingStops();
 
 //--- initialization
 int OnInit()
@@ -170,6 +186,7 @@ void OnTick()
       return;
 
    CheckBreakouts();
+   ApplyTrailingStops();
   }
 
 void ApplyChartStyle()
@@ -433,6 +450,163 @@ void CheckBreakouts()
                if(ExecuteTrade("PWL", false, g_PWL, g_PWLTradeExecuted))
                   g_lastBarSignalTime[3] = lastBarTime;
            }
+        }
+     }
+  }
+
+void ApplyTrailingStops()
+  {
+   // nothing to do if no mode selected
+   if(TrailingMode != TRAILING_MODE_STEP_PIPS && TrailingMode != TRAILING_MODE_PREV_CANDLE_HL && TrailingMode != TRAILING_MODE_ATR_CANDLE)
+      return;
+
+   ENUM_TIMEFRAMES calcTF = (TrailingTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : TrailingTimeframe);
+   // detect closed candle using its opening time
+   datetime currentBarTime = iTime(_Symbol, calcTF, 0);
+   if(currentBarTime == 0)
+      return;
+
+   if(g_lastTrailingBarTime != 0 && currentBarTime == g_lastTrailingBarTime)
+      return;
+   g_lastTrailingBarTime = currentBarTime;
+
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double stepDistance   = StepPips * point;
+   double offsetDistance = OffsetPips * point;
+
+   double prevLow  = 0.0;
+   double prevHigh = 0.0;
+   bool   needPrev = (TrailingMode == TRAILING_MODE_PREV_CANDLE_HL || TrailingMode == TRAILING_MODE_ATR_CANDLE);
+   if(needPrev)
+     {
+      prevLow  = iLow(_Symbol, calcTF, 1);
+      prevHigh = iHigh(_Symbol, calcTF, 1);
+      if(prevLow <= 0 || prevHigh <= 0)
+         return;
+     }
+
+   double atrValue = 0.0;
+   if(TrailingMode == TRAILING_MODE_ATR_CANDLE)
+     {
+      atrValue = iATR(_Symbol, calcTF, ATRPeriod, 1);
+      if(atrValue <= 0)
+         return;
+     }
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   int    stopLevelPoints   = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int    freezeLevelPoints = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double stopDistance      = stopLevelPoints * point;
+   double freezeDistance    = freezeLevelPoints * point;
+
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+     {
+      if(!PositionSelectByIndex(i))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(symbol != _Symbol)
+         continue;
+
+      long magic = (long)PositionGetInteger(POSITION_MAGIC);
+      if(magic != MagicNumber)
+         continue;
+
+      ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool isBuy  = (type == POSITION_TYPE_BUY);
+      bool isSell = (type == POSITION_TYPE_SELL);
+      if(!isBuy && !isSell)
+         continue;
+
+      double oldSL = PositionGetDouble(POSITION_SL);
+      double tp    = PositionGetDouble(POSITION_TP);
+      double newSL = oldSL;
+
+      switch(TrailingMode)
+        {
+         case TRAILING_MODE_STEP_PIPS:
+            if(stepDistance <= 0.0 || oldSL == 0.0)
+               continue;
+            if(isBuy)
+               newSL = oldSL + stepDistance;
+            else
+               newSL = oldSL - stepDistance;
+            break;
+
+         case TRAILING_MODE_PREV_CANDLE_HL:
+            if(isBuy)
+               newSL = prevLow + offsetDistance;
+            else
+               newSL = prevHigh - offsetDistance;
+            break;
+
+         case TRAILING_MODE_ATR_CANDLE:
+            {
+             double atrOffset = atrValue * ATRExt;
+             if(isBuy)
+                newSL = prevLow + atrOffset;
+             else
+                newSL = prevHigh - atrOffset;
+            }
+            break;
+        }
+
+      newSL = NormalizeDouble(newSL, digits);
+
+      // honour broker stop-level so the stop never sits closer to price than allowed
+      if(stopDistance > 0)
+        {
+         if(isBuy)
+            newSL = MathMin(newSL, ask - stopDistance);
+         else
+            newSL = MathMax(newSL, ask + stopDistance);
+        }
+
+      // freeze-level check prevents submitting an update too close to current price
+      if(freezeDistance > 0)
+        {
+         if(isBuy)
+            newSL = MathMin(newSL, bid - freezeDistance);
+         else
+            newSL = MathMax(newSL, ask + freezeDistance);
+        }
+
+      if(tp > 0)
+        {
+         if(isBuy && newSL > tp)
+            newSL = tp;
+         if(isSell && newSL < tp)
+            newSL = tp;
+        }
+
+      if(isBuy)
+        {
+         if(newSL <= 0.0 || newSL <= oldSL)
+            continue;
+        }
+      else
+        {
+         if(newSL <= 0.0)
+            continue;
+         if(oldSL != 0.0 && newSL >= oldSL)
+            continue;
+        }
+
+      ResetLastError();
+      if(!trade.PositionModify(symbol, newSL, tp))
+        {
+         int error = GetLastError();
+         PrintFormat("Trailing stop update failed for %s (%s). Error=%d. %s",
+                     symbol,
+                     isBuy ? "BUY" : "SELL",
+                     error,
+                     trade.ResultRetcodeDescription());
+        }
+      else
+        {
+         PrintFormat("Trailing stop adjusted for %s (%s) -> %.5f", symbol, isBuy ? "BUY" : "SELL", newSL);
         }
      }
   }
