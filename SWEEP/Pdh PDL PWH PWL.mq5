@@ -489,7 +489,23 @@ void ApplyTrailingStops()
    double atrValue = 0.0;
    if(TrailingMode == TRAILING_MODE_ATR_CANDLE)
      {
-      atrValue = iATR(_Symbol, calcTF, ATRPeriod, 1);
+      int atrHandle = iATR(_Symbol, calcTF, ATRPeriod);
+      if(atrHandle == INVALID_HANDLE)
+        {
+         Print("Failed to create ATR handle for trailing timeframe");
+         return;
+        }
+
+      double atrBuffer[];
+      if(CopyBuffer(atrHandle, 0, 1, 1, atrBuffer) != 1)
+        {
+         Print("Failed to copy ATR data for trailing timeframe");
+         IndicatorRelease(atrHandle);
+         return;
+        }
+      IndicatorRelease(atrHandle);
+
+      atrValue = atrBuffer[0];
       if(atrValue <= 0)
          return;
      }
@@ -924,8 +940,8 @@ string NormalizeSymbol(const string symbol)
    for(int i = 0; i < StringLen(upper); ++i)
       {
        int ch = (int)StringGetCharacter(upper, i);
-       if(ch >= 'A' && ch <= 'Z')
-          result += CharToString(ch);
+        if(ch >= 'A' && ch <= 'Z')
+           result += CharToString((uchar)ch);
       }
    return(result);
   }
