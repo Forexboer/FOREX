@@ -519,8 +519,9 @@ void ApplyTrailingStops()
 
    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
      {
-     if(!PositionSelectByIndex(positionIndex))
-        continue;
+      ulong posTicket = PositionGetTicket(positionIndex);
+      if(!PositionSelectByTicket(posTicket))
+         continue;
 
       string symbol = PositionGetString(POSITION_SYMBOL);
       if(symbol != _Symbol)
