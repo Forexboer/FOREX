@@ -517,8 +517,7 @@ void ApplyTrailingStops()
    double stopDistance      = stopLevelPoints * point;
    double freezeDistance    = freezeLevelPoints * point;
 
-    int positionIndex = PositionsTotal() - 1;
-    for(; positionIndex >= 0; --positionIndex)
+    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
       {
       if(!PositionSelectByIndex(positionIndex))
          continue;
