@@ -92,6 +92,7 @@ struct SDecisiveCandle
 SDecisiveCandle g_decisive = {false};
 datetime        g_lastSignalDay = 0;
 datetime        g_lastTradeDay  = 0;
+datetime        g_currentDayStart = 0;
 int             g_atrHandleDecisive = INVALID_HANDLE;
 int             g_atrHandleCustom   = INVALID_HANDLE;
 
@@ -166,16 +167,16 @@ void OnTick()
 bool EvaluateDailySignal()
   {
    datetime now_time = TimeCurrent();
-   datetime day_start = GetDayStart(now_time);
+   g_currentDayStart = GetDayStart(now_time);
 
-   datetime decision_time = day_start + InpCloseHour * 3600 + InpCloseMinute * 60;
+   datetime decision_time = g_currentDayStart + InpCloseHour * 3600 + InpCloseMinute * 60;
    if(now_time < decision_time)
       return(false);
 
-   if(g_lastSignalDay == day_start)
+   if(g_lastSignalDay == g_currentDayStart)
       return(false);
 
-   g_lastSignalDay = day_start;
+   g_lastSignalDay = g_currentDayStart;
    g_decisive.valid = false;
 
    int shift = iBarShift(_Symbol,InpDecisiveTimeframe,decision_time - 1);
@@ -196,7 +197,7 @@ bool EvaluateDailySignal()
    else if(close_price < open_price)
       direction = -1;
 
-   g_decisive.day_start = day_start;
+   g_decisive.day_start = g_currentDayStart;
    g_decisive.open_time = iTime(_Symbol,InpDecisiveTimeframe,shift);
    g_decisive.close_time = g_decisive.open_time + PeriodSeconds(InpDecisiveTimeframe);
    g_decisive.open = open_price;
@@ -226,17 +227,17 @@ void TryPlaceTrade()
 
    // we komen hier alleen als alle eerdere checks geslaagd zijn
 
-   datetime day_start = g_decisive.day_start;
+   datetime trade_day = g_decisive.day_start;
 
    // controleer of deze dag toegestaan is
-   if(!IsTradingDay(TimeDayOfWeek(day_start)))
+   if(!IsTradingDay(TimeDayOfWeek(trade_day)))
      {
       Print("Smart Candle V2: trading disabled for this day");
       return;
      }
 
    // controleer of er al een trade is geplaatst op deze dag
-   if(TradeAlreadyPlaced(day_start))
+   if(TradeAlreadyPlaced(trade_day))
      {
       Print("Smart Candle V2: daily trade already executed");
       return;
@@ -291,7 +292,7 @@ void TryPlaceTrade()
 
    if(trade_result)
      {
-      g_lastTradeDay = day_start;
+      g_lastTradeDay = trade_day;
       Print("Smart Candle V2: trade placed successfully");
      }
    else
@@ -574,7 +575,8 @@ void UpdateLastTradeDayFromHistory()
       return;
 
    int deals = HistoryDealsTotal();
-   for(int i = deals - 1; i >= 0; --i)
+   int i;
+   for(i = deals - 1; i >= 0; --i)
      {
       ulong ticket = HistoryDealGetTicket(i);
       if(ticket == 0)
