@@ -4,13 +4,13 @@
 #property strict
 
 #include <Trade\Trade.mqh>
-#include <Object.mqh>               // Added missing include to match dependencies
-#include <StdLibErr.mqh>             // Added missing include to match dependencies
-#include <OrderInfo.mqh>             // Added missing include to match dependencies
-#include <HistoryOrderInfo.mqh>      // Added missing include to match dependencies
-#include <PositionInfo.mqh>          // Added missing include to match dependencies
-#include <DealInfo.mqh>              // Added missing include to match dependencies
-#include <Calendar\Calendar.mqh>     // Added for calendar event types used in news filter
+#include <Object.mqh>
+#include <StdLibErr.mqh>
+// #include <OrderInfo.mqh>
+// #include <HistoryOrderInfo.mqh>
+// #include <PositionInfo.mqh>
+// #include <DealInfo.mqh>
+// #include <Calendar\Calendar.mqh>
 
 //--- enumerations
 enum ENUM_SL_MODE
@@ -446,15 +446,28 @@ double CalculateLotSize(const int direction,const double entry,const double sl)
 //+------------------------------------------------------------------+
 double NormalizeVolumeToSymbol(double volume)
   {
-   double min_lot = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
-   double max_lot = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
+   double min_lot  = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+   double max_lot  = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MAX);
    double lot_step = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+
    if(lot_step <= 0.0)
       lot_step = 0.01;
 
+   // clamp naar min/max
    volume = MathMax(min_lot,MathMin(max_lot,volume));
+
+   // afronden op lot_step
    volume = MathFloor(volume / lot_step + 0.5) * lot_step;
-   int vol_digits = (int)SymbolInfoInteger(_Symbol,SYMBOL_VOLUME_DIGITS);
+
+   // digits afleiden uit lot_step, bijv. 0.01 -> 2 digits
+   int vol_digits = 0;
+   double tmp = lot_step;
+   while(tmp < 1.0 && vol_digits < 8)
+     {
+      tmp *= 10.0;
+      vol_digits++;
+     }
+
    return(NormalizeDouble(volume,vol_digits));
   }
 
@@ -534,54 +547,19 @@ int GetATRShift(const ENUM_TIMEFRAMES timeframe,const datetime reference_time)
 //+------------------------------------------------------------------+
 bool CheckNewsBlock()
   {
-   // als filter uit staat: nooit blokken
+   // Als de nieuwsfilter uit staat: nooit blokken
    if(!InpUseNewsFilter)
       return(false);
 
-   datetime now       = TimeCurrent();
-   datetime from_time = now - InpNewsBlockBeforeMin * 60;
-   datetime to_time   = now + InpNewsBlockAfterMin  * 60;
+   // LET OP:
+   // De Calendar API (MqlCalendarEvent, CalendarEventByFilter, enz.)
+   // is niet beschikbaar op deze terminal / VPS.
+   // Daarom is deze functie nu een 'stub' en blokkeert hij geen trades.
+   //
+   // De inputs InpUseNewsFilter, InpNewsBlockBeforeMin, InpNewsBlockAfterMin
+   // en InpHighImpactNewsOnly blijven bestaan, maar worden hier niet gebruikt.
+   // Later kan ik dit zelf weer uitbreiden als Calendar.mqh beschikbaar is.
 
-   // haal base en quote currency uit symbool, bijv. EURUSD -> "EUR" en "USD"
-   string base  = StringSubstr(_Symbol,0,3);
-   string quote = StringSubstr(_Symbol,3,3);
-
-   MqlCalendarEvent events[];
-   ArrayInitialize(events,0);
-
-   // LET OP: signatuur van CalendarEventByFilter kan verschillen per build.
-   // Deze variant is gangbaar: (dest[], country, currency, subject, from, to)
-   int total = CalendarEventByFilter(events,
-                                     0,          // country = 0 (alle)
-                                     NULL,       // currency filter (we filteren later zelf)
-                                     NULL,       // subject id
-                                     from_time,
-                                     to_time);
-
-   if(total <= 0)
-      return(false);
-
-   for(int i = 0; i < total; ++i)
-     {
-      // filter op relevante valuta
-      string ev_currency = events[i].currency;
-      if(StringFind(ev_currency,base) != 0 && StringFind(ev_currency,quote) != 0)
-         continue;
-
-      // correcte enum: ENUM_CALENDAR_EVENT_IMPORTANCE
-      ENUM_CALENDAR_EVENT_IMPORTANCE imp =
-        (ENUM_CALENDAR_EVENT_IMPORTANCE)events[i].importance;
-
-      if(InpHighImpactNewsOnly && imp != CALENDAR_IMPORTANCE_HIGH)
-         continue;
-
-      // Als we hier komen, is er een blokkerend event
-      Print("Smart Candle V2: blocking trade due to news event: ", ev_currency,
-            " at ", TimeToString(events[i].time,TIME_DATE|TIME_MINUTES));
-      return(true);
-     }
-
-   // geen blokkerende events gevonden
    return(false);
   }
 
