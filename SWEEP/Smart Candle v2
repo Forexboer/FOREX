@@ -108,7 +108,6 @@ double   PipValue();
 bool     GetATRValue(const int handle,const int shift,double &atr_value);
 int      GetATRShift(const ENUM_TIMEFRAMES timeframe,const datetime reference_time);
 bool     CheckNewsBlock();
-bool     IsNewsBlockingCurrency(const string currency,const datetime now_time);
 void     UpdateLastTradeDayFromHistory();
 double   NormalizeVolumeToSymbol(double volume);
 bool     ValidateStops(const int direction,const double entry,const double sl,const double tp);
@@ -225,20 +224,25 @@ void TryPlaceTrade()
    if(!g_decisive.valid)
       return;
 
+   // we komen hier alleen als alle eerdere checks geslaagd zijn
+
    datetime day_start = g_decisive.day_start;
 
+   // controleer of deze dag toegestaan is
    if(!IsTradingDay(TimeDayOfWeek(day_start)))
      {
       Print("Smart Candle V2: trading disabled for this day");
       return;
      }
 
+   // controleer of er al een trade is geplaatst op deze dag
    if(TradeAlreadyPlaced(day_start))
      {
       Print("Smart Candle V2: daily trade already executed");
       return;
      }
 
+   // nieuwsfilter check
    if(InpUseNewsFilter && CheckNewsBlock())
      {
       Print("Smart Candle V2: blocked by news filter");
@@ -246,7 +250,9 @@ void TryPlaceTrade()
      }
 
    RefreshRates();
-   double entry_price = (g_decisive.direction > 0) ? SymbolInfoDouble(_Symbol,SYMBOL_ASK) : SymbolInfoDouble(_Symbol,SYMBOL_BID); // Fixed syntax error from stray characters
+   double entry_price = (g_decisive.direction > 0)
+                        ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)
+                        : SymbolInfoDouble(_Symbol,SYMBOL_BID);
 
    double sl_price = 0.0;
    double tp_price = 0.0;
@@ -528,55 +534,54 @@ int GetATRShift(const ENUM_TIMEFRAMES timeframe,const datetime reference_time)
 //+------------------------------------------------------------------+
 bool CheckNewsBlock()
   {
+   // als filter uit staat: nooit blokken
    if(!InpUseNewsFilter)
       return(false);
 
-   datetime now_time = TimeCurrent();
-   string base_currency  = SymbolInfoString(_Symbol,SYMBOL_CURRENCY_BASE);
-   string quote_currency = SymbolInfoString(_Symbol,SYMBOL_CURRENCY_PROFIT);
+   datetime now       = TimeCurrent();
+   datetime from_time = now - InpNewsBlockBeforeMin * 60;
+   datetime to_time   = now + InpNewsBlockAfterMin  * 60;
 
-   if(IsNewsBlockingCurrency(base_currency,now_time))
-      return(true);
-   if(IsNewsBlockingCurrency(quote_currency,now_time))
-      return(true);
+   // haal base en quote currency uit symbool, bijv. EURUSD -> "EUR" en "USD"
+   string base  = StringSubstr(_Symbol,0,3);
+   string quote = StringSubstr(_Symbol,3,3);
 
-   return(false);
-  }
+   MqlCalendarEvent events[];
+   ArrayInitialize(events,0);
 
-bool IsNewsBlockingCurrency(const string currency,const datetime now_time)
-  {
-   if(currency == NULL || StringLen(currency) == 0)
-      return(false);
+   // LET OP: signatuur van CalendarEventByFilter kan verschillen per build.
+   // Deze variant is gangbaar: (dest[], country, currency, subject, from, to)
+   int total = CalendarEventByFilter(events,
+                                     0,          // country = 0 (alle)
+                                     NULL,       // currency filter (we filteren later zelf)
+                                     NULL,       // subject id
+                                     from_time,
+                                     to_time);
 
-   datetime from_time = now_time - (InpNewsBlockBeforeMin + 60) * 60;
-   datetime to_time   = now_time + (InpNewsBlockAfterMin + 60) * 60;
-
-   MqlCalendarEvent events[]; // Ensure events array is declared for CalendarEventByFilter
-   int total = CalendarEventByFilter(events,from_time,to_time,NULL,currency);
    if(total <= 0)
       return(false);
 
    for(int i = 0; i < total; ++i)
      {
-      ENUM_CALENDAR_IMPORTANCE imp = (ENUM_CALENDAR_IMPORTANCE)events[i].importance; // Cast to expected enum to avoid conversion error
-      if(InpHighImpactNewsOnly)
-        {
-         if(imp != CALENDAR_IMPORTANCE_HIGH)
-            continue;
-        }
-      else
-        {
-         if(imp == CALENDAR_IMPORTANCE_LOW)
-            continue;
-        }
+      // filter op relevante valuta
+      string ev_currency = events[i].currency;
+      if(StringFind(ev_currency,base) != 0 && StringFind(ev_currency,quote) != 0)
+         continue;
 
-      datetime event_time = events[i].time;
-      datetime block_start = event_time - InpNewsBlockBeforeMin * 60;
-      datetime block_end   = event_time + InpNewsBlockAfterMin * 60;
-      if(now_time >= block_start && now_time <= block_end)
-         return(true);
+      // correcte enum: ENUM_CALENDAR_EVENT_IMPORTANCE
+      ENUM_CALENDAR_EVENT_IMPORTANCE imp =
+        (ENUM_CALENDAR_EVENT_IMPORTANCE)events[i].importance;
+
+      if(InpHighImpactNewsOnly && imp != CALENDAR_IMPORTANCE_HIGH)
+         continue;
+
+      // Als we hier komen, is er een blokkerend event
+      Print("Smart Candle V2: blocking trade due to news event: ", ev_currency,
+            " at ", TimeToString(events[i].time,TIME_DATE|TIME_MINUTES));
+      return(true);
      }
 
+   // geen blokkerende events gevonden
    return(false);
   }
 
