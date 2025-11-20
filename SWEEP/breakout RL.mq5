@@ -171,7 +171,7 @@ int GetWeekPos()
 //------------------------------------------------------------------
 int GetDOW()
   {
-   int dow = TimeDayOfWeek( TimeCurrent() ); // 0 = zondag, 6 = zaterdag
+   int dow = TimeDayOfWeek( TimeTradeServer() ); // 0 = zondag, 6 = zaterdag
    if(dow == 0 || dow == 6)
       return -1; // weekend
    return dow - 1; // maandag=0 .. vrijdag=4
@@ -286,7 +286,7 @@ double CalculateVolume(double sl_price, double entry_price)
    double money_per_point = tick_value / (tick_size / _Point);
    double sl_points       = sl_dist / _Point;
 
-   double risk_money = AccountBalance() * RiskPercent / 100.0;
+   double risk_money = AccountInfoDouble(ACCOUNT_BALANCE) * RiskPercent / 100.0;
    if(risk_money <= 0.0)
       return 0.0;
 
@@ -334,7 +334,7 @@ datetime DateOfDay(datetime t)
 // Totaal aantal deals (geschiedenis) vandaag
 int GetTodayTradeCount()
   {
-   datetime today = DateOfDay( TimeCurrent() );
+   datetime today = DateOfDay( TimeTradeServer() );
    int count = 0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
      {
@@ -349,7 +349,7 @@ int GetTodayTradeCount()
 // Percentage verlies van vandaag (simpel berekend)
 double GetTodayLossPercent()
   {
-   datetime today = DateOfDay( TimeCurrent() );
+   datetime today = DateOfDay( TimeTradeServer() );
    double profit_today = 0.0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
      {
@@ -682,7 +682,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    double profit = HistoryDealGetDouble(deal, DEAL_PROFIT) +
                    HistoryDealGetDouble(deal, DEAL_SWAP) +
                    HistoryDealGetDouble(deal, DEAL_COMMISSION);
-   double risk_money = AccountBalance() * RiskPercent / 100.0;
+   double risk_money = AccountInfoDouble(ACCOUNT_BALANCE) * RiskPercent / 100.0;
    if(risk_money <= 0.0) return;
    double reward = profit / risk_money;
    UpdateStats(state_id, action_id, reward);
@@ -704,7 +704,7 @@ void OnTick()
    if(dow < 0) return;
 
    // Tijdsfilter (handelswindow)
-   int hour = TimeHour( TimeCurrent() );
+   int hour = TimeHour( TimeTradeServer() );
    if(hour < StartHour || hour > EndHour)
       return;
 
