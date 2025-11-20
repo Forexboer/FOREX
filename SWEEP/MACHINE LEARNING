@@ -1,1 +1,741 @@
+//+------------------------------------------------------------------+
+//|                                                  RL_PDH_PDL_PWH_PWL_EA.mq5 |
+//|                                                                          |
+//|  Deze Expert Advisor implementeert een breakout-strategie op basis      |
+//|  van vorige dag/week highs en lows, met een eenvoudige                    |
+//|  reinforcement‑learning laag. De kernpunten zijn:                         |
+//|                                                                          |
+//|  1) Levels                                                              |
+//|     • PDH = Vorige Dag High                                             |
+//|     • PDL = Vorige Dag Low                                              |
+//|     • PWH = Vorige Week High                                            |
+//|     • PWL = Vorige Week Low                                             |
+//|                                                                          |
+//|  2) Entry regels                                                        |
+//|     • Break boven PDH  → open BUY                                       |
+//|     • Break onder PDL  → open SELL                                      |
+//|     • Per dag wordt slechts één PDH‑break en één PDL‑break trade         |
+//|       toegestaan (g_pdh_broken_today/g_pdl_broken_today).               |
+//|                                                                          |
+//|  3) SL en TP                                                            |
+//|     • Stop Loss (SL) wordt altijd berekend als ATR * multiplier,        |
+//|       waarbij de ATR wordt genomen van een instelbaar tijdframe.        |
+//|     • Voor Take Profit (TP) zijn er drie profielen:                     |
+//|         0: TP = 2 × risicobedrag (2R)                                   |
+//|         1: TP = 3 × risicobedrag (3R)                                   |
+//|         2: geen vast TP; gebruik alleen een trailing stop               |
+//|         3: SKIP – geen trade openen                                     |
+//|                                                                          |
+//|  4) Machine Learning (RL)                                              |
+//|     • De EA gebruikt een discrete RL‑tabel om te leren welke van        |
+//|       bovenstaande profielen het beste werkt in verschillende situaties. |
+//|     • De "state" bestaat uit:                                            |
+//|         – DayOfWeek (maandag=0 .. vrijdag=4)                            |
+//|         – Volatiliteitsklasse (ATR in pips: low/mid/high)               |
+//|         – WeekPos (positie binnen PWL–PWH: onder/midden/boven)          |
+//|     • Bij een setup wordt met epsilon‑greedy een profiel gekozen:       |
+//|         – Met kans Epsilon: willekeurig profiel (explore)              |
+//|         – Anders: het profiel met de hoogste gemiddelde reward          |
+//|     • Na het sluiten van elke trade wordt de reward (R‑multiple)        |
+//|       teruggeschreven naar de RL‑tabel.                                 |
+//|     • De RL‑tabel wordt opgeslagen in een CSV-bestand zodat kennis      |
+//|       behouden blijft tussen sessies.                                   |
+//|                                                                          |
+//|  5) Daglimieten & filters                                               |
+//|     • Het aantal trades per dag en het maximaal toegestane             |
+//|       percentage dagverlies zijn instelbaar.                            |
+//|     • Er is een tijdsfilter (StartHour/EndHour) zodat de EA alleen      |
+//|       binnen bepaalde uren handelt.                                     |
+//|                                                                          |
+//|  Deze commentaarsectie vat de strategie en ML‑logica samen; de code     |
+//|  hieronder implementeert deze logica stap voor stap.                    |
+//+------------------------------------------------------------------+
+
+#property strict
+
+#include <Trade\Trade.mqh>
+
+// Handelsobject
+CTrade trade;
+
+//------------------------------------------------------------------
+// Invoerparameters
+//------------------------------------------------------------------
+input int      MagicNumber         = 222001;    // Magic number voor posities
+input double   RiskPercent         = 1.0;       // Risico per trade in %
+input int      ATR_Period          = 14;        // ATR periode
+input double   AtrLowPips          = 10;        // ATR-grens voor lage volatiliteit (pips)
+input double   AtrHighPips         = 30;        // ATR-grens voor hoge volatiliteit (pips)
+input ENUM_TIMEFRAMES AtrTF        = PERIOD_H1; // Tijdframe voor ATR-berekening
+
+input bool     UseRL               = true;      // Reinforcement learning aan/uit
+input double   Epsilon             = 0.25;      // Exploratiekans voor RL (0..1)
+input double   TrailingStepPips    = 10;        // Trailing-stop stap in pips
+
+input int      MaxTradesPerDay     = 5;         // Maximale trades per dag
+input double   MaxDailyLossPercent = 5.0;       // Maximale dagverlies in % van equity
+
+input int      StartHour           = 0;         // Startuur trading window
+input int      EndHour             = 23;        // Einduur trading window
+
+//------------------------------------------------------------------
+// Structuur voor actieprofielen
+//------------------------------------------------------------------
+enum TPMode
+  {
+   TP_RR = 0,          // TP op basis van risico-rendement verhouding (R-multiple)
+   TP_FIXED_PIPS = 1,  // TP op basis van vaste pips
+   TP_NONE_TRAIL = 2   // Geen TP, wel trailing stop
+  };
+
+struct ActionProfile
+  {
+   double atr_mult;   // SL = ATR * atr_mult
+   double rr;         // RR-verhouding voor TP_RR-modus
+   double tp_pips;    // Vaste TP in pips voor TP_FIXED_PIPS-modus
+   TPMode tp_mode;    // TP-modus (RR, fixed pips, geen TP)
+   bool   use_trail;  // Trailing stop gebruiken ja/nee
+   bool   skip;       // Skip-actie: geen trade openen
+  };
+
+// Aantal mogelijke acties (profielen + skip)
+#define NUM_ACTIONS 4
+
+// Array voor profielen
+ActionProfile g_profiles[NUM_ACTIONS];
+
+//------------------------------------------------------------------
+// Structuur voor RL-statistieken
+//------------------------------------------------------------------
+struct StateActionStat
+  {
+   double total_reward; // Totale reward (som van R-multiples)
+   int    count;        // Aantal keer deze state+actie gebruikt is
+   double avg_reward;   // Gemiddelde reward
+  };
+
+// Dimensies van state: volatiliteit (3), weekpositie (3), dag van week (5)
+#define NUM_VOL_CLASSES  3 // 0=low, 1=mid, 2=high
+#define NUM_WEEKPOS      3 // 0=dichtbij PWL, 1=midden, 2=dichtbij PWH
+#define NUM_DOW          5 // Maandag(0) - Vrijdag(4)
+#define NUM_STATES       (NUM_VOL_CLASSES * NUM_WEEKPOS * NUM_DOW)
+
+// 2D-array voor RL-statistieken per state+actie
+StateActionStat g_stats[NUM_STATES][NUM_ACTIONS];
+
+// Bestandsnaam voor opslaan/laden van statistieken
+string RL_FILE_NAME = "RL_PDH_PDL_stats.csv";
+
+//------------------------------------------------------------------
+// Variabelen voor PDH/PDL en PWH/PWL
+//------------------------------------------------------------------
+datetime g_last_day_time    = 0;    // Laatste dag waarop levels zijn geüpdatet
+double   g_PDH              = 0;    // Vorige dag high
+double   g_PDL              = 0;    // Vorige dag low
+double   g_PWH              = 0;    // Vorige week high
+double   g_PWL              = 0;    // Vorige week low
+
+// Flags om te voorkomen dat er meerdere PDH/PDL-break trades per dag ontstaan
+bool     g_pdh_broken_today = false;
+bool     g_pdl_broken_today = false;
+
+//------------------------------------------------------------------
+// Utility: Random getal tussen 0 en 1
+//------------------------------------------------------------------
+double Random01()
+  {
+   return (double)MathRand() / 32767.0;
+  }
+
+//------------------------------------------------------------------
+// Bereken ATR in pips op gekozen timeframe
+//------------------------------------------------------------------
+double GetAtrPips()
+  {
+   double atr = iATR(_Symbol, AtrTF, ATR_Period, 1);
+   if(atr <= 0.0)
+      return 0.0;
+   return atr / _Point;
+  }
+
+//------------------------------------------------------------------
+// Bepaal volatiliteitsklasse op basis van ATR-waarde in pips
+// 0 = low, 1 = mid, 2 = high
+//------------------------------------------------------------------
+int GetVolClass()
+  {
+   double atr_pips = GetAtrPips();
+   if(atr_pips < AtrLowPips)
+      return 0;
+   if(atr_pips < AtrHighPips)
+      return 1;
+   return 2;
+  }
+
+//------------------------------------------------------------------
+// Bepaal weekpositie: 0 = dicht bij PWL (onderste 1/3),
+// 1 = midden (middelste 1/3), 2 = dicht bij PWH (bovenste 1/3)
+//------------------------------------------------------------------
+int GetWeekPos()
+  {
+   if(g_PWH <= g_PWL)
+      return 1; // fallback: midden
+
+   double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double range = g_PWH - g_PWL;
+   if(range <= 0)
+      return 1;
+
+   double rel = (price - g_PWL) / range; // 0..1
+   if(rel < 1.0 / 3.0)
+      return 0;
+   if(rel < 2.0 / 3.0)
+      return 1;
+   return 2;
+  }
+
+//------------------------------------------------------------------
+// Bepaal dag van de week (ma=0 .. vr=4, weekend = -1)
+//------------------------------------------------------------------
+int GetDOW()
+  {
+   datetime now = TimeCurrent();
+   int dow = TimeDayOfWeek(now); // 0 = zondag, 6 = zaterdag
+   if(dow == 0 || dow == 6)
+      return -1; // weekend
+   return dow - 1; // maandag=0 .. vrijdag=4
+  }
+
+//------------------------------------------------------------------
+// Bepaal state-id op basis van dag van week, volatiliteitsklasse en weekpositie
+//------------------------------------------------------------------
+int GetStateId()
+  {
+   int dow = GetDOW();
+   if(dow < 0)
+      return -1; // weekend of ongeldige dag
+
+   int vol = GetVolClass();
+   int wp  = GetWeekPos();
+
+   int state = dow * (NUM_VOL_CLASSES * NUM_WEEKPOS) + vol * NUM_WEEKPOS + wp;
+   if(state < 0)
+      state = 0;
+   if(state >= NUM_STATES)
+      state = NUM_STATES - 1;
+   return state;
+  }
+
+//------------------------------------------------------------------
+// Kies actie (profiel) via epsilon-greedy
+// - Met kans Epsilon kiest de EA een willekeurige actie (exploratie)
+// - Anders kiest hij de actie met de hoogste gemiddelde reward voor deze state
+//------------------------------------------------------------------
+int ChooseAction(int state_id)
+  {
+   if(!UseRL)
+      return 0; // Default profiel als RL uit staat
+
+   if(state_id < 0 || state_id >= NUM_STATES)
+      return 0;
+
+   // Exploratie
+   if(Random01() < Epsilon)
+      return MathRand() % NUM_ACTIONS;
+
+   // Exploitatie: kies de best presterende actie tot nu toe
+   double best_reward = -1e10;
+   int    best_action = 0;
+
+   for(int a = 0; a < NUM_ACTIONS; a++)
+     {
+      StateActionStat &st = g_stats[state_id][a];
+      double avg = (st.count > 0 ? st.avg_reward : 0.0);
+      if(avg > best_reward)
+        {
+         best_reward = avg;
+         best_action = a;
+        }
+     }
+   return best_action;
+  }
+
+//------------------------------------------------------------------
+// Update RL-statistieken na trade (state_id, action_id)
+//------------------------------------------------------------------
+void UpdateStats(int state_id, int action_id, double reward)
+  {
+   if(state_id < 0 || state_id >= NUM_STATES) return;
+   if(action_id < 0 || action_id >= NUM_ACTIONS) return;
+
+   StateActionStat &st = g_stats[state_id][action_id];
+   st.total_reward += reward;
+   st.count++;
+   st.avg_reward = st.total_reward / (double)st.count;
+  }
+
+//------------------------------------------------------------------
+// Maak comment voor een positie met state en actie
+//------------------------------------------------------------------
+string MakeComment(int state_id, int action_id)
+  {
+   return StringFormat("RL_s%d_a%d", state_id, action_id);
+  }
+
+// Parse comment om state_id en action_id eruit te halen
+bool ParseComment(const string comment, int &state_id, int &action_id)
+  {
+   int s_pos = StringFind(comment, "s");
+   int a_pos = StringFind(comment, "_a");
+   if(s_pos == -1 || a_pos == -1)
+      return false;
+
+   string s_str = StringSubstr(comment, s_pos + 1, a_pos - (s_pos + 1));
+   string a_str = StringSubstr(comment, a_pos + 2);
+
+   state_id  = (int)StringToInteger(s_str);
+   action_id = (int)StringToInteger(a_str);
+   return true;
+  }
+
+//------------------------------------------------------------------
+// Bereken lotgrootte op basis van SL-afstand en risicopercentage
+//------------------------------------------------------------------
+double CalculateVolume(double sl_price, double entry_price)
+  {
+   double sl_dist = MathAbs(entry_price - sl_price);
+   if(sl_dist <= 0.0)
+      return 0.0;
+
+   double tick_value, tick_size;
+   if(!SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE, tick_value))
+      return 0.0;
+   if(!SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE, tick_size))
+      return 0.0;
+
+   double money_per_point = tick_value / (tick_size / _Point);
+   double sl_points       = sl_dist / _Point;
+
+   double risk_money = AccountBalance() * RiskPercent / 100.0;
+   if(risk_money <= 0.0)
+      return 0.0;
+
+   double volume = risk_money / (sl_points * money_per_point);
+
+   double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   int    digits  = (int)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME_DIGITS);
+
+   // Rond volume af op stappen
+   volume = MathFloor(volume / step) * step;
+   volume = NormalizeDouble(volume, digits);
+
+   if(volume < min_lot) volume = 0.0;
+   if(volume > max_lot) volume = max_lot;
+
+   return volume;
+  }
+
+//------------------------------------------------------------------
+// Functies voor daglimieten (aantal trades en verlies)
+//------------------------------------------------------------------
+datetime DateOfDay(datetime t)
+  {
+   MqlDateTime dt;
+   TimeToStruct(t, dt);
+   dt.hour = 0;
+   dt.min  = 0;
+   dt.sec  = 0;
+   return StructToTime(dt);
+  }
+
+// Totaal aantal deals (geschiedenis) vandaag
+int GetTodayTradeCount()
+  {
+   datetime today = DateOfDay(TimeCurrent());
+   int count = 0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong ticket = HistoryDealGetTicket(i);
+      datetime dt = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+      if(DateOfDay(dt) == today)
+         count++;
+     }
+   return count;
+  }
+
+// Percentage verlies van vandaag (simpel berekend)
+double GetTodayLossPercent()
+  {
+   datetime today = DateOfDay(TimeCurrent());
+   double profit_today = 0.0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong ticket = HistoryDealGetTicket(i);
+      datetime dt = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
+      if(DateOfDay(dt) == today)
+        {
+         double p = HistoryDealGetDouble(ticket, DEAL_PROFIT) +
+                    HistoryDealGetDouble(ticket, DEAL_SWAP) +
+                    HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+         profit_today += p;
+        }
+     }
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity <= 0) return 0.0;
+   if(profit_today >= 0) return 0.0;
+   return MathAbs(profit_today) / equity * 100.0;
+  }
+
+//------------------------------------------------------------------
+// Controleer of er een open positie is met dezelfde magic number op dit symbool
+//------------------------------------------------------------------
+bool HasOpenPosition()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         return true;
+     }
+   return false;
+  }
+
+//------------------------------------------------------------------
+// Update PDH/PDL en PWH/PWL 1x per dag/week
+//------------------------------------------------------------------
+void UpdateLevels()
+  {
+   datetime day_time = iTime(_Symbol, PERIOD_D1, 0);
+   if(day_time != g_last_day_time)
+     {
+      g_last_day_time = day_time;
+      g_PDH = iHigh(_Symbol, PERIOD_D1, 1);
+      g_PDL = iLow(_Symbol, PERIOD_D1, 1);
+      g_PWH = iHigh(_Symbol, PERIOD_W1, 1);
+      g_PWL = iLow(_Symbol, PERIOD_W1, 1);
+      g_pdh_broken_today = false;
+      g_pdl_broken_today = false;
+      Print("Nieuw PDH/PDL/PWH/PWL: PDH=", g_PDH, " PDL=", g_PDL, " PWH=", g_PWH, " PWL=", g_PWL);
+     }
+  }
+
+//------------------------------------------------------------------
+// Open trade (direction: +1=BUY, -1=SELL)
+//------------------------------------------------------------------
+bool OpenTrade(int direction, int state_id, int action_id)
+  {
+   ActionProfile &p = g_profiles[action_id];
+   // Skip-profiel? Geen trade openen
+   if(p.skip)
+     {
+      Print("RL koos SKIP (state ", state_id, ", action ", action_id, ")");
+      return false;
+     }
+
+   // ATR op gekozen timeframe
+   double atr = iATR(_Symbol, AtrTF, ATR_Period, 1);
+   if(atr <= 0.0)
+     {
+      Print("ATR is 0, geen trade.");
+      return false;
+     }
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double entry_price, sl_price, tp_price = 0.0;
+
+   if(direction > 0)
+     {
+      entry_price = ask;
+      sl_price    = entry_price - atr * p.atr_mult;
+     }
+   else
+     {
+      entry_price = bid;
+      sl_price    = entry_price + atr * p.atr_mult;
+     }
+
+   double volume = CalculateVolume(sl_price, entry_price);
+   if(volume <= 0.0)
+     {
+      Print("Volume berekend als 0, geen trade.");
+      return false;
+     }
+
+   // Bereken TP op basis van profiel
+   if(p.tp_mode == TP_RR)
+     {
+      double risk_points = MathAbs(entry_price - sl_price);
+      double tp_delta    = risk_points * p.rr;
+      if(direction > 0)
+         tp_price = entry_price + tp_delta;
+      else
+         tp_price = entry_price - tp_delta;
+     }
+   else if(p.tp_mode == TP_FIXED_PIPS)
+     {
+      double tp_delta = p.tp_pips * _Point;
+      if(direction > 0)
+         tp_price = entry_price + tp_delta;
+      else
+         tp_price = entry_price - tp_delta;
+     }
+   else if(p.tp_mode == TP_NONE_TRAIL)
+     {
+      tp_price = 0.0; // Geen TP, alleen trailing
+     }
+
+   string comment = MakeComment(state_id, action_id);
+   trade.SetExpertMagicNumber(MagicNumber);
+   bool result;
+   if(direction > 0)
+      result = trade.Buy(volume, _Symbol, entry_price, sl_price, tp_price, comment);
+   else
+      result = trade.Sell(volume, _Symbol, entry_price, sl_price, tp_price, comment);
+   if(!result)
+     {
+      Print("OrderSend fout: ", _LastError);
+      return false;
+     }
+   return true;
+  }
+
+//------------------------------------------------------------------
+// Trailing stop beheren voor posities met trailing-profiel
+//------------------------------------------------------------------
+void ManageTrailing()
+  {
+   double stop_level_points = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double min_stop_dist     = stop_level_points * _Point;
+   double step              = TrailingStepPips * _Point;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC)  != MagicNumber) continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      int state_id, action_id;
+      if(!ParseComment(comment, state_id, action_id)) continue;
+      ActionProfile &p = g_profiles[action_id];
+      if(!p.use_trail) continue;
+      int type  = (int)PositionGetInteger(POSITION_TYPE);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if(type == POSITION_TYPE_BUY)
+        {
+         double new_sl = bid - step;
+         if(new_sl > sl && (bid - new_sl) >= min_stop_dist)
+           {
+            trade.SetExpertMagicNumber(MagicNumber);
+            trade.PositionModify(ticket, new_sl, tp);
+           }
+        }
+      else if(type == POSITION_TYPE_SELL)
+        {
+         double new_sl = ask + step;
+         if(sl == 0.0 || new_sl < sl)
+           {
+            if((new_sl - ask) >= min_stop_dist)
+              {
+               trade.SetExpertMagicNumber(MagicNumber);
+               trade.PositionModify(ticket, new_sl, tp);
+              }
+           }
+        }
+     }
+  }
+
+//------------------------------------------------------------------
+// Opslaan van RL-statistieken naar bestand
+//------------------------------------------------------------------
+void SaveStats()
+  {
+   int h = FileOpen(RL_FILE_NAME, FILE_WRITE | FILE_CSV | FILE_COMMON, ';');
+   if(h == INVALID_HANDLE)
+     {
+      Print("Kan RL-bestand niet schrijven: ", _LastError);
+      return;
+     }
+   for(int s = 0; s < NUM_STATES; s++)
+     {
+      for(int a = 0; a < NUM_ACTIONS; a++)
+        {
+         StateActionStat &st = g_stats[s][a];
+         FileWrite(h, s, a, st.total_reward, st.count);
+        }
+     }
+   FileClose(h);
+  }
+
+//------------------------------------------------------------------
+// Laden van RL-statistieken uit bestand
+//------------------------------------------------------------------
+void LoadStats()
+  {
+   int h = FileOpen(RL_FILE_NAME, FILE_READ | FILE_CSV | FILE_COMMON, ';');
+   if(h == INVALID_HANDLE)
+     {
+      Print("Geen RL-bestand gevonden, start vers.");
+      return;
+     }
+   while(!FileIsEnding(h))
+     {
+      int s   = FileReadInteger(h);
+      int a   = FileReadInteger(h);
+      double t= FileReadDouble(h);
+      int c   = FileReadInteger(h);
+      if(s >= 0 && s < NUM_STATES && a >= 0 && a < NUM_ACTIONS)
+        {
+         g_stats[s][a].total_reward = t;
+         g_stats[s][a].count        = c;
+         g_stats[s][a].avg_reward   = (c > 0 ? t / (double)c : 0.0);
+        }
+     }
+   FileClose(h);
+  }
+
+//------------------------------------------------------------------
+// Initialiseer actieprofielen (hard-coded)
+//------------------------------------------------------------------
+void InitProfiles()
+  {
+   // Actie 0: ATR*1.0, TP = 2R, geen trailing
+   g_profiles[0].atr_mult  = 1.0;
+   g_profiles[0].rr        = 2.0;
+   g_profiles[0].tp_pips   = 0.0;
+   g_profiles[0].tp_mode   = TP_RR;
+   g_profiles[0].use_trail = false;
+   g_profiles[0].skip      = false;
+
+   // Actie 1: ATR*1.5, TP = 3R, geen trailing
+   g_profiles[1].atr_mult  = 1.5;
+   g_profiles[1].rr        = 3.0;
+   g_profiles[1].tp_pips   = 0.0;
+   g_profiles[1].tp_mode   = TP_RR;
+   g_profiles[1].use_trail = false;
+   g_profiles[1].skip      = false;
+
+   // Actie 2: ATR*1.0, geen TP, wel trailing
+   g_profiles[2].atr_mult  = 1.0;
+   g_profiles[2].rr        = 0.0;
+   g_profiles[2].tp_pips   = 0.0;
+   g_profiles[2].tp_mode   = TP_NONE_TRAIL;
+   g_profiles[2].use_trail = true;
+   g_profiles[2].skip      = false;
+
+   // Actie 3: Skip
+   g_profiles[3].atr_mult  = 1.0;
+   g_profiles[3].rr        = 0.0;
+   g_profiles[3].tp_pips   = 0.0;
+   g_profiles[3].tp_mode   = TP_NONE_TRAIL;
+   g_profiles[3].use_trail = false;
+   g_profiles[3].skip      = true;
+  }
+
+//------------------------------------------------------------------
+// OnInit: initialiseer profielen en laad RL-stats
+//------------------------------------------------------------------
+int OnInit()
+  {
+   MathSrand((uint)TimeLocal());
+   InitProfiles();
+   LoadStats();
+   UpdateLevels();
+   return INIT_SUCCEEDED;
+  }
+
+//------------------------------------------------------------------
+// OnDeinit: stats saven
+//------------------------------------------------------------------
+void OnDeinit(const int reason)
+  {
+   SaveStats();
+  }
+
+//------------------------------------------------------------------
+// OnTradeTransaction: update reward als trade sluit
+//------------------------------------------------------------------
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &req,
+                        const MqlTradeResult &res)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+   ulong deal = trans.deal;
+   long entry = HistoryDealGetInteger(deal, DEAL_ENTRY);
+   if(entry != DEAL_ENTRY_OUT)
+      return;
+   string symbol = HistoryDealGetString(deal, DEAL_SYMBOL);
+   if(symbol != _Symbol) return;
+   long magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
+   if(magic != MagicNumber) return;
+   string comment = HistoryDealGetString(deal, DEAL_COMMENT);
+   int state_id, action_id;
+   if(!ParseComment(comment, state_id, action_id)) return;
+   double profit = HistoryDealGetDouble(deal, DEAL_PROFIT) +
+                   HistoryDealGetDouble(deal, DEAL_SWAP) +
+                   HistoryDealGetDouble(deal, DEAL_COMMISSION);
+   double risk_money = AccountBalance() * RiskPercent / 100.0;
+   if(risk_money <= 0.0) return;
+   double reward = profit / risk_money;
+   UpdateStats(state_id, action_id, reward);
+  }
+
+//------------------------------------------------------------------
+// OnTick: hoofdlogica voor setup, entry en trailing
+//------------------------------------------------------------------
+void OnTick()
+  {
+   // Update PDH/PDL en PWH/PWL indien nodig
+   UpdateLevels();
+
+   // Trailing stop bijwerken voor open posities
+   ManageTrailing();
+
+   // Weekend: geen trading
+   int dow = GetDOW();
+   if(dow < 0) return;
+
+   // Tijdsfilter (handelswindow)
+   datetime now = TimeCurrent();
+   int hour = TimeHour(now);
+   if(hour < StartHour || hour > EndHour)
+      return;
+
+   // Daglimieten: max trades per dag en max verlies
+   if(GetTodayTradeCount() >= MaxTradesPerDay)
+      return;
+   if(GetTodayLossPercent() >= MaxDailyLossPercent)
+      return;
+
+   // Geen nieuwe trade openen als er al een positie open is voor dit EA
+   if(HasOpenPosition())
+      return;
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   // Bereken state id voor deze setup
+   int state_id = GetStateId();
+   if(state_id < 0) return;
+   // Kies actie via RL
+   int action_id = ChooseAction(state_id);
+   // Break boven PDH → BUY
+   if(!g_pdh_broken_today && bid > g_PDH)
+     {
+      if(OpenTrade(+1, state_id, action_id))
+         g_pdh_broken_today = true;
+     }
+   // Break onder PDL → SELL
+   if(!g_pdl_broken_today && bid < g_PDL)
+     {
+      if(OpenTrade(-1, state_id, action_id))
+         g_pdl_broken_today = true;
+     }
+  }
 
