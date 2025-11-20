@@ -7,7 +7,7 @@
 //+------------------------------------------------------------------+
 #property strict
 
-#include <Trade\Trade.mqh>
+#include <Trade/Trade.mqh>
 
 // Handelsobject
 CTrade trade;
@@ -75,7 +75,7 @@ struct StateActionStat
 #define NUM_STATES       (NUM_VOL_CLASSES * NUM_WEEKPOS * NUM_DOW)
 
 // 2D-array voor RL-statistieken per state+actie
-StateActionStat g_stats[NUM_STATES][NUM_ACTIONS];
+StateActionStat g_stats[NUM_STATES][NUM_ACTIONS] = {};
 
 // Bestandsnaam voor opslaan/laden van statistieken
 string RL_FILE_NAME = "RL_PDH_PDL_stats.csv";
