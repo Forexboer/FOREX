@@ -3,54 +3,8 @@
 //|                                                                          |
 //|  Deze Expert Advisor implementeert een breakout-strategie op basis      |
 //|  van vorige dag/week highs en lows, met een eenvoudige                    |
-//|  reinforcement‑learning laag. De kernpunten zijn:                         |
-//|                                                                          |
-//|  1) Levels                                                              |
-//|     • PDH = Vorige Dag High                                             |
-//|     • PDL = Vorige Dag Low                                              |
-//|     • PWH = Vorige Week High                                            |
-//|     • PWL = Vorige Week Low                                             |
-//|                                                                          |
-//|  2) Entry regels                                                        |
-//|     • Break boven PDH  → open BUY                                       |
-//|     • Break onder PDL  → open SELL                                      |
-//|     • Per dag wordt slechts één PDH‑break en één PDL‑break trade         |
-//|       toegestaan (g_pdh_broken_today/g_pdl_broken_today).               |
-//|                                                                          |
-//|  3) SL en TP                                                            |
-//|     • Stop Loss (SL) wordt altijd berekend als ATR * multiplier,        |
-//|       waarbij de ATR wordt genomen van een instelbaar tijdframe.        |
-//|     • Voor Take Profit (TP) zijn er drie profielen:                     |
-//|         0: TP = 2 × risicobedrag (2R)                                   |
-//|         1: TP = 3 × risicobedrag (3R)                                   |
-//|         2: geen vast TP; gebruik alleen een trailing stop               |
-//|         3: SKIP – geen trade openen                                     |
-//|                                                                          |
-//|  4) Machine Learning (RL)                                              |
-//|     • De EA gebruikt een discrete RL‑tabel om te leren welke van        |
-//|       bovenstaande profielen het beste werkt in verschillende situaties. |
-//|     • De "state" bestaat uit:                                            |
-//|         – DayOfWeek (maandag=0 .. vrijdag=4)                            |
-//|         – Volatiliteitsklasse (ATR in pips: low/mid/high)               |
-//|         – WeekPos (positie binnen PWL–PWH: onder/midden/boven)          |
-//|     • Bij een setup wordt met epsilon‑greedy een profiel gekozen:       |
-//|         – Met kans Epsilon: willekeurig profiel (explore)              |
-//|         – Anders: het profiel met de hoogste gemiddelde reward          |
-//|     • Na het sluiten van elke trade wordt de reward (R‑multiple)        |
-//|       teruggeschreven naar de RL‑tabel.                                 |
-//|     • De RL‑tabel wordt opgeslagen in een CSV-bestand zodat kennis      |
-//|       behouden blijft tussen sessies.                                   |
-//|                                                                          |
-//|  5) Daglimieten & filters                                               |
-//|     • Het aantal trades per dag en het maximaal toegestane             |
-//|       percentage dagverlies zijn instelbaar.                            |
-//|     • Er is een tijdsfilter (StartHour/EndHour) zodat de EA alleen      |
-//|       binnen bepaalde uren handelt.                                     |
-//|                                                                          |
-//|  Deze commentaarsectie vat de strategie en ML‑logica samen; de code     |
-//|  hieronder implementeert deze logica stap voor stap.                    |
+//|  reinforcement-learning laag.                                           |
 //+------------------------------------------------------------------+
-
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -139,6 +93,9 @@ double   g_PWL              = 0;    // Vorige week low
 bool     g_pdh_broken_today = false;
 bool     g_pdl_broken_today = false;
 
+// ATR-indicator handle
+int      g_atr_handle       = INVALID_HANDLE;
+
 //------------------------------------------------------------------
 // Utility: Random getal tussen 0 en 1
 //------------------------------------------------------------------
@@ -148,11 +105,26 @@ double Random01()
   }
 
 //------------------------------------------------------------------
+// Haal kale ATR-waarde (in prijsunits) via indicator-handle
+//------------------------------------------------------------------
+double GetAtrValue()
+  {
+   if(g_atr_handle == INVALID_HANDLE)
+      return 0.0;
+
+   double buf[1];
+   if(CopyBuffer(g_atr_handle, 0, 1, 1, buf) <= 0)
+      return 0.0;
+
+   return buf[0];
+  }
+
+//------------------------------------------------------------------
 // Bereken ATR in pips op gekozen timeframe
 //------------------------------------------------------------------
 double GetAtrPips()
   {
-   double atr = iATR(_Symbol, AtrTF, ATR_Period, 1);
+   double atr = GetAtrValue();
    if(atr <= 0.0)
       return 0.0;
    return atr / _Point;
@@ -199,8 +171,7 @@ int GetWeekPos()
 //------------------------------------------------------------------
 int GetDOW()
   {
-   datetime now = TimeCurrent();
-   int dow = TimeDayOfWeek(now); // 0 = zondag, 6 = zaterdag
+   int dow = TimeDayOfWeek(TimeCurrent()); // 0 = zondag, 6 = zaterdag
    if(dow == 0 || dow == 6)
       return -1; // weekend
    return dow - 1; // maandag=0 .. vrijdag=4
@@ -228,8 +199,6 @@ int GetStateId()
 
 //------------------------------------------------------------------
 // Kies actie (profiel) via epsilon-greedy
-// - Met kans Epsilon kiest de EA een willekeurige actie (exploratie)
-// - Anders kiest hij de actie met de hoogste gemiddelde reward voor deze state
 //------------------------------------------------------------------
 int ChooseAction(int state_id)
   {
@@ -249,7 +218,7 @@ int ChooseAction(int state_id)
 
    for(int a = 0; a < NUM_ACTIONS; a++)
      {
-      StateActionStat &st = g_stats[state_id][a];
+      StateActionStat st = g_stats[state_id][a];
       double avg = (st.count > 0 ? st.avg_reward : 0.0);
       if(avg > best_reward)
         {
@@ -268,10 +237,11 @@ void UpdateStats(int state_id, int action_id, double reward)
    if(state_id < 0 || state_id >= NUM_STATES) return;
    if(action_id < 0 || action_id >= NUM_ACTIONS) return;
 
-   StateActionStat &st = g_stats[state_id][action_id];
-   st.total_reward += reward;
-   st.count++;
-   st.avg_reward = st.total_reward / (double)st.count;
+   g_stats[state_id][action_id].total_reward += reward;
+   g_stats[state_id][action_id].count++;
+   g_stats[state_id][action_id].avg_reward =
+      g_stats[state_id][action_id].total_reward /
+      (double)g_stats[state_id][action_id].count;
   }
 
 //------------------------------------------------------------------
@@ -325,7 +295,18 @@ double CalculateVolume(double sl_price, double entry_price)
    double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double step    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   int    digits  = (int)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME_DIGITS);
+
+   // Bepaal volume-digits uit de stapgrootte
+   int digits = 0;
+   if(step > 0.0)
+     {
+      double tmp = step;
+      while(tmp < 1.0 && digits < 8)
+        {
+         tmp *= 10.0;
+         digits++;
+        }
+     }
 
    // Rond volume af op stappen
    volume = MathFloor(volume / step) * step;
@@ -428,7 +409,8 @@ void UpdateLevels()
 //------------------------------------------------------------------
 bool OpenTrade(int direction, int state_id, int action_id)
   {
-   ActionProfile &p = g_profiles[action_id];
+   ActionProfile p = g_profiles[action_id];
+
    // Skip-profiel? Geen trade openen
    if(p.skip)
      {
@@ -436,8 +418,8 @@ bool OpenTrade(int direction, int state_id, int action_id)
       return false;
      }
 
-   // ATR op gekozen timeframe
-   double atr = iATR(_Symbol, AtrTF, ATR_Period, 1);
+   // ATR via handle
+   double atr = GetAtrValue();
    if(atr <= 0.0)
      {
       Print("ATR is 0, geen trade.");
@@ -509,9 +491,14 @@ bool OpenTrade(int direction, int state_id, int action_id)
 //------------------------------------------------------------------
 void ManageTrailing()
   {
-   double stop_level_points = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long stop_level_raw = 0;
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stop_level_raw))
+      stop_level_raw = 0;
+
+   double stop_level_points = (double)stop_level_raw;
    double min_stop_dist     = stop_level_points * _Point;
    double step              = TrailingStepPips * _Point;
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       ulong ticket = PositionGetTicket(i);
@@ -521,13 +508,16 @@ void ManageTrailing()
       string comment = PositionGetString(POSITION_COMMENT);
       int state_id, action_id;
       if(!ParseComment(comment, state_id, action_id)) continue;
-      ActionProfile &p = g_profiles[action_id];
+
+      ActionProfile p = g_profiles[action_id];
       if(!p.use_trail) continue;
+
       int type  = (int)PositionGetInteger(POSITION_TYPE);
       double sl = PositionGetDouble(POSITION_SL);
       double tp = PositionGetDouble(POSITION_TP);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
       if(type == POSITION_TYPE_BUY)
         {
          double new_sl = bid - step;
@@ -567,7 +557,7 @@ void SaveStats()
      {
       for(int a = 0; a < NUM_ACTIONS; a++)
         {
-         StateActionStat &st = g_stats[s][a];
+         StateActionStat st = g_stats[s][a];
          FileWrite(h, s, a, st.total_reward, st.count);
         }
      }
@@ -640,7 +630,7 @@ void InitProfiles()
   }
 
 //------------------------------------------------------------------
-// OnInit: initialiseer profielen en laad RL-stats
+// OnInit: initialiseer profielen en laad RL-stats + ATR handle
 //------------------------------------------------------------------
 int OnInit()
   {
@@ -648,15 +638,25 @@ int OnInit()
    InitProfiles();
    LoadStats();
    UpdateLevels();
+
+   g_atr_handle = iATR(_Symbol, AtrTF, ATR_Period);
+   if(g_atr_handle == INVALID_HANDLE)
+     {
+      Print("Kan ATR-indicator niet initialiseren: ", _LastError);
+      return INIT_FAILED;
+     }
+
    return INIT_SUCCEEDED;
   }
 
 //------------------------------------------------------------------
-// OnDeinit: stats saven
+// OnDeinit: stats saven + ATR handle releasen
 //------------------------------------------------------------------
 void OnDeinit(const int reason)
   {
    SaveStats();
+   if(g_atr_handle != INVALID_HANDLE)
+      IndicatorRelease(g_atr_handle);
   }
 
 //------------------------------------------------------------------
@@ -704,8 +704,7 @@ void OnTick()
    if(dow < 0) return;
 
    // Tijdsfilter (handelswindow)
-   datetime now = TimeCurrent();
-   int hour = TimeHour(now);
+   int hour = TimeHour(TimeCurrent());
    if(hour < StartHour || hour > EndHour)
       return;
 
@@ -738,4 +737,3 @@ void OnTick()
          g_pdl_broken_today = true;
      }
   }
-
