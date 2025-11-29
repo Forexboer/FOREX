@@ -26,6 +26,10 @@ input bool     UseRL               = true;      // Reinforcement learning aan/ui
 input double   Epsilon             = 0.25;      // Exploratiekans voor RL (0..1)
 input double   TrailingStepPips    = 10;        // Trailing-stop stap in pips
 
+input bool     UseBrokerDayStart   = true;      // Gebruik broker D1 candle als dagstart
+input int      CustomDayStartHour  = 0;         // Server-uur voor start van de trading-dag (wanneer UseBrokerDayStart=false)
+input ENUM_TIMEFRAMES CustomDayTF  = PERIOD_M15;// Timeframe voor custom dagberekening
+
 input int      MaxTradesPerDay     = 5;         // Maximale trades per dag
 input double   MaxDailyLossPercent = 5.0;       // Maximale dagverlies in % van equity
 
@@ -84,6 +88,7 @@ string RL_FILE_NAME = "RL_PDH_PDL_stats.csv";
 // Variabelen voor PDH/PDL en PWH/PWL
 //------------------------------------------------------------------
 datetime g_last_day_time    = 0;    // Laatste dag waarop levels zijn geüpdatet
+datetime g_last_week_time   = 0;    // Laatste week waarop levels zijn geüpdatet
 double   g_PDH              = 0;    // Vorige dag high
 double   g_PDL              = 0;    // Vorige dag low
 double   g_PWH              = 0;    // Vorige week high
@@ -371,6 +376,48 @@ double GetTodayLossPercent()
   }
 
 //------------------------------------------------------------------
+// Helpers voor dagstart en custom dag high/low
+//------------------------------------------------------------------
+datetime GetCustomDayStart(datetime now)
+  {
+   MqlDateTime dt;
+   TimeToStruct(now, dt);
+   dt.min = 0;
+   dt.sec = 0;
+   int start_hour = CustomDayStartHour;
+   if(start_hour < 0) start_hour = 0;
+   if(start_hour > 23) start_hour = 23;
+
+   if(dt.hour < start_hour)
+      dt.day -= 1;
+
+   dt.hour = start_hour;
+   return StructToTime(dt);
+  }
+
+bool CalculateCustomDayLevels(datetime prev_start, datetime current_start, double &high, double &low)
+  {
+   double highs[];
+   double lows[];
+   int copied_high = CopyHigh(_Symbol, CustomDayTF, prev_start, current_start - 1, highs);
+   int copied_low  = CopyLow (_Symbol, CustomDayTF, prev_start, current_start - 1, lows);
+   if(copied_high <= 0 || copied_low <= 0)
+      return false;
+
+   high = highs[0];
+   low  = lows[0];
+   for(int i = 1; i < ArraySize(highs); i++)
+     {
+      if(highs[i] > high) high = highs[i];
+     }
+   for(int j = 1; j < ArraySize(lows); j++)
+     {
+      if(lows[j] < low) low = lows[j];
+     }
+   return true;
+  }
+
+//------------------------------------------------------------------
 // Controleer of er een open positie is met dezelfde magic number op dit symbool
 //------------------------------------------------------------------
 bool HasOpenPosition()
@@ -386,24 +433,56 @@ bool HasOpenPosition()
    return false;
   }
 
-//------------------------------------------------------------------
-// Update PDH/PDL en PWH/PWL 1x per dag/week
-//------------------------------------------------------------------
-void UpdateLevels()
-  {
-   datetime day_time = iTime(_Symbol, PERIOD_D1, 0);
-   if(day_time != g_last_day_time)
-     {
-      g_last_day_time = day_time;
-      g_PDH = iHigh(_Symbol, PERIOD_D1, 1);
-      g_PDL = iLow(_Symbol, PERIOD_D1, 1);
-      g_PWH = iHigh(_Symbol, PERIOD_W1, 1);
-      g_PWL = iLow(_Symbol, PERIOD_W1, 1);
-      g_pdh_broken_today = false;
-      g_pdl_broken_today = false;
-      Print("Nieuw PDH/PDL/PWH/PWL: PDH=", g_PDH, " PDL=", g_PDL, " PWH=", g_PWH, " PWL=", g_PWL);
-     }
-  }
+ //------------------------------------------------------------------
+ // Update PDH/PDL en PWH/PWL 1x per dag/week
+ //------------------------------------------------------------------
+ void UpdateLevels()
+   {
+    datetime now = TimeCurrent();
+
+    // Daglevels
+    if(UseBrokerDayStart)
+      {
+       datetime day_time = iTime(_Symbol, PERIOD_D1, 0);
+       if(day_time != g_last_day_time)
+         {
+          g_last_day_time = day_time;
+          g_PDH = iHigh(_Symbol, PERIOD_D1, 1);
+          g_PDL = iLow(_Symbol, PERIOD_D1, 1);
+          g_pdh_broken_today = false;
+          g_pdl_broken_today = false;
+          Print("Nieuw PDH/PDL (broker dagstart): PDH=", g_PDH, " PDL=", g_PDL);
+         }
+      }
+    else
+      {
+       datetime day_start = GetCustomDayStart(now);
+       if(day_start != g_last_day_time)
+         {
+          datetime prev_start = day_start - 24 * 60 * 60;
+          double pdh, pdl;
+          if(CalculateCustomDayLevels(prev_start, day_start, pdh, pdl))
+            {
+             g_last_day_time = day_start;
+             g_PDH = pdh;
+             g_PDL = pdl;
+             g_pdh_broken_today = false;
+             g_pdl_broken_today = false;
+             Print("Nieuw PDH/PDL (custom dagstart=", CustomDayStartHour, "): PDH=", g_PDH, " PDL=", g_PDL);
+            }
+         }
+      }
+
+    // Weeklevels op basis van broker-week
+    datetime week_time = iTime(_Symbol, PERIOD_W1, 0);
+    if(week_time != g_last_week_time)
+      {
+       g_last_week_time = week_time;
+       g_PWH = iHigh(_Symbol, PERIOD_W1, 1);
+       g_PWL = iLow(_Symbol, PERIOD_W1, 1);
+       Print("Nieuw PWH/PWL: PWH=", g_PWH, " PWL=", g_PWL);
+      }
+   }
 
 //------------------------------------------------------------------
 // Open trade (direction: +1=BUY, -1=SELL)
@@ -448,6 +527,9 @@ bool OpenTrade(int direction, int state_id, int action_id)
       Print("Volume berekend als 0, geen trade.");
       return false;
      }
+
+   Print("[DEBUG] Placing breakout order: type=", (direction > 0 ? "BUY" : "SELL"),
+         " price=", entry_price, " SL=", sl_price, " TP=", tp_price, " volume=", volume);
 
    // Bereken TP op basis van profiel
    if(p.tp_mode == TP_RR)
@@ -702,27 +784,60 @@ void OnTick()
 
    // Weekend: geen trading
    int dow = GetDOW();
-   if(dow < 0) return;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   bool canTrade = true;
+   string reason = "";
+
+   if(dow < 0)
+     {
+      canTrade = false;
+      reason = "Weekend";
+     }
 
    // Tijdsfilter (handelswindow)
    int hour = TimeHour( TimeCurrent() );
-   if(hour < StartHour || hour > EndHour)
-      return;
+   if(canTrade && (hour < StartHour || hour > EndHour))
+     {
+      canTrade = false;
+      reason = "Outside trading window";
+     }
 
    // Daglimieten: max trades per dag en max verlies
-   if(GetTodayTradeCount() >= MaxTradesPerDay)
-      return;
-   if(GetTodayLossPercent() >= MaxDailyLossPercent)
-      return;
+   if(canTrade && GetTodayTradeCount() >= MaxTradesPerDay)
+     {
+      canTrade = false;
+      reason = "Max trades reached";
+     }
+   if(canTrade && GetTodayLossPercent() >= MaxDailyLossPercent)
+     {
+      canTrade = false;
+      reason = "Max daily loss reached";
+     }
 
    // Geen nieuwe trade openen als er al een positie open is voor dit EA
-   if(HasOpenPosition())
+   if(canTrade && HasOpenPosition())
+     {
+      canTrade = false;
+      reason = "Position already open";
+     }
+
+   Print("[DEBUG] CheckTradeConditions: Bid=", bid, " Ask=", ask,
+         " PDH=", g_PDH, " PDL=", g_PDL,
+         " PWH=", g_PWH, " PWL=", g_PWL,
+         " CanTrade=", canTrade, " Reason=", (reason == "" ? "OK" : reason));
+
+   if(!canTrade)
       return;
 
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    // Bereken state id voor deze setup
    int state_id = GetStateId();
-   if(state_id < 0) return;
+   if(state_id < 0)
+     {
+      Print("[DEBUG] Geen geldige state (mogelijk weekend)");
+      return;
+     }
    // Kies actie via RL
    int action_id = ChooseAction(state_id);
    // Break boven PDH → BUY
