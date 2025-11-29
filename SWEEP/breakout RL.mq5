@@ -177,7 +177,7 @@ int GetWeekPos()
 int GetDOW()
   {
    // Gebruik server time vanuit TimeCurrent om compatibiliteit te waarborgen
-   int dow = TimeDayOfWeek( TimeCurrent() ); // 0 = zondag, 6 = zaterdag
+   int dow = TimeDayOfWeek(TimeCurrent()); // 0 = zondag, 6 = zaterdag
    if(dow == 0 || dow == 6)
       return -1; // weekend
    return dow - 1; // maandag=0 .. vrijdag=4
@@ -340,7 +340,7 @@ datetime DateOfDay(datetime t)
 // Totaal aantal deals (geschiedenis) vandaag
 int GetTodayTradeCount()
   {
-   datetime today = DateOfDay( TimeCurrent() );
+   datetime today = DateOfDay(TimeCurrent());
    int count = 0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
      {
@@ -355,7 +355,7 @@ int GetTodayTradeCount()
 // Percentage verlies van vandaag (simpel berekend)
 double GetTodayLossPercent()
   {
-   datetime today = DateOfDay( TimeCurrent() );
+   datetime today = DateOfDay(TimeCurrent());
    double profit_today = 0.0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
      {
@@ -797,7 +797,7 @@ void OnTick()
      }
 
    // Tijdsfilter (handelswindow)
-   int hour = TimeHour( TimeCurrent() );
+   int hour = TimeHour(TimeCurrent());
    if(canTrade && (hour < StartHour || hour > EndHour))
      {
       canTrade = false;
