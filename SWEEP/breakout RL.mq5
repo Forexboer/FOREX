@@ -176,7 +176,7 @@ int GetWeekPos()
 //------------------------------------------------------------------
 int GetDOW()
   {
-   // Gebruik server time vanuit TimeCurrent om compatibiliteit te waarborgen
+   // Gebruik server time vanuit TimeCurrent() om compatibiliteit te waarborgen
    int dow = TimeDayOfWeek(TimeCurrent()); // 0 = zondag, 6 = zaterdag
    if(dow == 0 || dow == 6)
       return -1; // weekend
