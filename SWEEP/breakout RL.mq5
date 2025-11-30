@@ -797,7 +797,9 @@ void OnTick()
      }
 
    // Tijdsfilter (handelswindow)
-   int hour = TimeHour(TimeCurrent());
+   MqlDateTime now;
+   TimeToStruct(TimeCurrent(), now);
+   int hour = now.hour;
    if(canTrade && (hour < StartHour || hour > EndHour))
      {
       canTrade = false;

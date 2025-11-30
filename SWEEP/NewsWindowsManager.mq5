@@ -378,13 +378,15 @@ void ProcessDayWindows(NewsWindow &arr[], int minutes)
 void CheckWindows()
 {
    datetime current_time = TimeCurrent();
-   int day = TimeDayOfWeek(current_time); // 0=Sunday
+   MqlDateTime current_struct;
+   TimeToStruct(current_time, current_struct);
+   int day = current_struct.day_of_week; // 0=Sunday
    if(day != current_day)
    {
       current_day = day;
       ResetDailyFlags();
    }
-   int minutes = TimeHour(current_time)*60 + TimeMinute(current_time);
+   int minutes = current_struct.hour * 60 + current_struct.min;
 
    switch(day)
    {
