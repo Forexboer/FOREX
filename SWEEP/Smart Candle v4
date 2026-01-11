@@ -87,6 +87,8 @@ enum RiskMethod
 input RiskMethod        RM_Method      = RM_FixedLot;
 input double            FixedLotSize   = 0.10;      // Fixed lot size when RM_FixedLot
 input double            RiskPercent    = 1.0;       // Percentage of balance to risk per trade (0..100)
+input bool              UseMaxSL_Pips  = true;
+input double            MaxSL_Pips     = 30;        // example: 20/30/50
 
 //---- exit modules -------------------------------------------------------
 input bool              UseTimeExit         = false;                 // Enable time-based exit
@@ -681,6 +683,40 @@ double NormalizeLotSize(double lots)
   }
 
 //+------------------------------------------------------------------+
+//| Validate SL distance in pips with optional max filter.           |
+//+------------------------------------------------------------------+
+bool ValidateSLMaxPips(bool isBuy, double entryPrice, double slPrice, double maxSLPips, bool useMaxFilter, double &outSLPips)
+  {
+   double pipSize = (_Digits == 3 || _Digits == 5) ? (_Point * 10.0) : _Point;
+   double normalizedEntry = NormalizeDouble(entryPrice, _Digits);
+   double normalizedSl = NormalizeDouble(slPrice, _Digits);
+   outSLPips = 0.0;
+   if(pipSize <= 0.0)
+     {
+      Print("BLOCK: SL pips invalid (<=0). entry=", normalizedEntry, ", sl=", normalizedSl, ", slPips=", outSLPips);
+      return(false);
+     }
+
+   if(isBuy)
+      outSLPips = (normalizedEntry - normalizedSl) / pipSize;
+   else
+      outSLPips = (normalizedSl - normalizedEntry) / pipSize;
+
+   if(outSLPips <= 0.0)
+     {
+      Print("BLOCK: SL pips invalid (<=0). entry=", normalizedEntry, ", sl=", normalizedSl, ", slPips=", outSLPips);
+      return(false);
+     }
+   if(useMaxFilter && outSLPips > maxSLPips)
+     {
+      Print("BLOCK: SL pips above max. slPips=", outSLPips, ", max=", maxSLPips,
+            ", entry=", normalizedEntry, ", sl=", normalizedSl);
+      return(false);
+     }
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
 //| Opens a market position with computed parameters using CTrade.   |
 //| orderType should be ORDER_TYPE_BUY or ORDER_TYPE_SELL.            |
 //+------------------------------------------------------------------+
@@ -766,6 +802,14 @@ void EnterTrade(int orderType)
       else
          tp = entryPrice - dist;
      }
+
+   entryPrice = NormalizeDouble(entryPrice, _Digits);
+   sl = NormalizeDouble(sl, _Digits);
+   tp = NormalizeDouble(tp, _Digits);
+
+   double slPips = 0.0;
+   if(!ValidateSLMaxPips(orderType == ORDER_TYPE_BUY, entryPrice, sl, MaxSL_Pips, UseMaxSL_Pips, slPips))
+      return;
 
    // Determine lot size
    double lots;
