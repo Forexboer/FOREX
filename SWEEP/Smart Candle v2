@@ -40,6 +40,12 @@ input bool             AllowFriday         = true;        // Trade on Friday
 input bool             UseOneTradePerDay   = true;        // Enforce one trade per day
 input bool             UseNewsFilter       = false;       // Placeholder for news filter (not implemented)
 
+//---- HTF EMA trend filter (entry gate) -------------------------------
+input bool             UseHTF_EMA_Filter   = false;      // Enable HTF EMA filter for entries
+input ENUM_TIMEFRAMES  TrendEMA_TF         = PERIOD_H4;  // Timeframe for HTF trend EMAs
+input int              TrendEMA_Fast       = 40;         // Fast EMA period
+input int              TrendEMA_Slow       = 50;         // Slow EMA period
+
 //---- stop loss options --------------------------------------------------
 enum StopLossMethod
   {
@@ -82,6 +88,12 @@ input RiskMethod        RM_Method      = RM_FixedLot;
 input double            FixedLotSize   = 0.10;      // Fixed lot size when RM_FixedLot
 input double            RiskPercent    = 1.0;       // Percentage of balance to risk per trade (0..100)
 
+//---- exit modules -------------------------------------------------------
+input bool              UseTimeExit         = false;                 // Enable time-based exit
+input int               MaxTradeMinutes     = 0;                     // Max trade duration (minutes); 0 disables
+input bool              EnableExitLogging   = false;                 // Enable exit logging to CSV
+input string            ExitLogFile         = "SmartCandleV2_ExitLog.csv"; // Exit log file name
+
 //---- internal state variables ------------------------------------------
 int     g_decisionMinutes     = 0;        // Minutes after midnight for decisive candle close
 datetime g_lastBarTime        = 0;        // Last processed bar time on DecisionTimeframe
@@ -91,6 +103,10 @@ int     g_lastTradeDayOfYear  = -1;       // Day of year of the last trade (for 
 int atrHandleSL  = INVALID_HANDLE;        // Handle for ATR used in stop loss (old method)
 int atrHandleTP  = INVALID_HANDLE;        // Handle for ATR used in take profit
 int atrHandleCustomSL = INVALID_HANDLE;   // Handle for custom timeframe ATR for stop loss
+
+// Trend EMA handles for entry filter
+int trendEmaFastHandle = INVALID_HANDLE;
+int trendEmaSlowHandle = INVALID_HANDLE;
 
 // Trade object
 CTrade trade;
@@ -131,6 +147,21 @@ double GetATR(int handle, int shift)
   }
 
 //+------------------------------------------------------------------+
+//| Indicator value fetcher for EMA                                  |
+//+------------------------------------------------------------------+
+double GetEMA(int handle, int shift)
+  {
+   if(handle == INVALID_HANDLE)
+      return(0.0);
+   double buffer[];
+   ArraySetAsSeries(buffer, true);
+   int copied = CopyBuffer(handle, 0, shift, 1, buffer);
+   if(copied == 1)
+      return(buffer[0]);
+   return(0.0);
+  }
+
+//+------------------------------------------------------------------+
 //| Check if trading is allowed on the given day of week             |
 //+------------------------------------------------------------------+
 bool DayAllowed(int dayOfWeek)
@@ -153,6 +184,204 @@ bool NewsBlocked()
       return(false);
    // Real news filtering would require external data. Not implemented.
    return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Determine HTF EMA trend permissions for entries                  |
+//+------------------------------------------------------------------+
+bool GetHTFTrendPermissions(bool &buyAllowed, bool &sellAllowed)
+  {
+   buyAllowed = true;
+   sellAllowed = true;
+   if(!UseHTF_EMA_Filter)
+      return(true);
+
+   if(trendEmaFastHandle == INVALID_HANDLE || trendEmaSlowHandle == INVALID_HANDLE)
+     {
+      buyAllowed = false;
+      sellAllowed = false;
+      Print("HTF EMA filter handles are invalid.");
+      return(false);
+     }
+
+   double emaFast = GetEMA(trendEmaFastHandle, 1);
+   double emaSlow = GetEMA(trendEmaSlowHandle, 1);
+   if(emaFast == 0.0 || emaSlow == 0.0)
+     {
+      buyAllowed = false;
+      sellAllowed = false;
+      Print("HTF EMA filter data unavailable.");
+      return(false);
+     }
+
+   if(emaFast > emaSlow)
+     {
+      buyAllowed = true;
+      sellAllowed = false;
+     }
+   else if(emaFast < emaSlow)
+     {
+      buyAllowed = false;
+      sellAllowed = true;
+     }
+   else
+     {
+      buyAllowed = false;
+      sellAllowed = false;
+     }
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Check time-based exit                                            |
+//+------------------------------------------------------------------+
+bool IsTimeExitTriggered(ulong ticket, int maxMinutes, int &durationMin)
+  {
+   durationMin = 0;
+   if(!UseTimeExit || maxMinutes <= 0)
+      return(false);
+   if(!PositionSelectByTicket(ticket))
+      return(false);
+   datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+   int elapsed = (int)((TimeCurrent() - openTime) / 60);
+   durationMin = elapsed;
+   if(elapsed >= maxMinutes)
+      return(true);
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Log exit to CSV                                                  |
+//+------------------------------------------------------------------+
+void LogExitToCSV(const string reason,
+                  const string symbol,
+                  const ulong ticket,
+                  const long positionType,
+                  const double volume,
+                  const datetime openTime,
+                  const datetime closeTime,
+                  const int durationMin,
+                  const double openPrice,
+                  const double closePrice,
+                  const double profit)
+  {
+   if(!EnableExitLogging)
+      return;
+   int file = FileOpen(ExitLogFile, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI);
+   if(file == INVALID_HANDLE)
+     {
+      Print("Failed to open exit log file: ", ExitLogFile, " Error=", GetLastError());
+      return;
+     }
+   bool writeHeader = (FileSize(file) == 0);
+   FileSeek(file, 0, SEEK_END);
+   if(writeHeader)
+     {
+      FileWrite(file, "timestamp", "symbol", "ticket", "type", "lots", "openTime", "closeTime",
+                "durationMin", "openPrice", "closePrice", "profit", "reason");
+     }
+   string typeStr = (positionType == POSITION_TYPE_BUY ? "BUY" : "SELL");
+   FileWrite(file,
+             TimeToString(closeTime, TIME_DATE | TIME_SECONDS),
+             symbol,
+             (long)ticket,
+             typeStr,
+             DoubleToString(volume, 2),
+             TimeToString(openTime, TIME_DATE | TIME_SECONDS),
+             TimeToString(closeTime, TIME_DATE | TIME_SECONDS),
+             durationMin,
+             DoubleToString(openPrice, _Digits),
+             DoubleToString(closePrice, _Digits),
+             DoubleToString(profit, 2),
+             reason);
+   FileClose(file);
+  }
+
+//+------------------------------------------------------------------+
+//| Attempt to close a position and log exit reason                  |
+//+------------------------------------------------------------------+
+bool TryClosePosition(ulong ticket, const string reason, int durationMin)
+  {
+   if(!PositionSelectByTicket(ticket))
+      return(false);
+
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   long positionType = PositionGetInteger(POSITION_TYPE);
+   double volume = PositionGetDouble(POSITION_VOLUME);
+   datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+
+   if(durationMin < 0)
+      durationMin = (int)((TimeCurrent() - openTime) / 60);
+
+   trade.SetExpertMagicNumber(MagicNumber);
+
+   bool closed = false;
+   for(int attempt = 0; attempt < 2; attempt++)
+     {
+      if(trade.PositionClose(ticket))
+        {
+         closed = (trade.ResultRetcode() == TRADE_RETCODE_DONE);
+         if(closed)
+            break;
+        }
+     }
+
+   if(!closed)
+     {
+      Print("Position close failed for ticket ", ticket, ". Retcode=", trade.ResultRetcode(),
+            " ", trade.ResultRetcodeDescription());
+      return(false);
+     }
+
+   datetime closeTime = TimeCurrent();
+   double closePrice = trade.ResultPrice();
+   double profit = 0.0;
+   ulong dealTicket = trade.ResultDeal();
+   if(dealTicket > 0)
+     {
+      if(HistorySelect(openTime, closeTime))
+        {
+         if(HistoryDealSelect(dealTicket))
+           {
+            closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+            closePrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+            profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+           }
+        }
+     }
+
+   LogExitToCSV(reason, symbol, ticket, positionType, volume, openTime, closeTime,
+                durationMin, openPrice, closePrice, profit);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Central manager for open positions                               |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+  {
+   for(int pos = PositionsTotal() - 1; pos >= 0; pos--)
+     {
+      ulong ticket = PositionGetTicket(pos);
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(magic != MagicNumber || sym != _Symbol)
+         continue;
+
+      int durationMin = 0;
+      if(IsTimeExitTriggered(ticket, MaxTradeMinutes, durationMin))
+        {
+         if(TryClosePosition(ticket, "TimeExit", durationMin))
+            continue;
+        }
+
+      // Existing exit modules (lock profit, trailing stop, EMA slope exit)
+      // are expected to be evaluated here without more than one close attempt
+      // per position per tick. This EA currently has no additional exit logic.
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -372,6 +601,11 @@ int OnInit()
      {
       atrHandleCustomSL = iATR(_Symbol, ATR_Custom_TF, ATR_Custom_Per);
      }
+   if(UseHTF_EMA_Filter)
+     {
+      trendEmaFastHandle = iMA(_Symbol, TrendEMA_TF, TrendEMA_Fast, 0, MODE_EMA, PRICE_CLOSE);
+      trendEmaSlowHandle = iMA(_Symbol, TrendEMA_TF, TrendEMA_Slow, 0, MODE_EMA, PRICE_CLOSE);
+     }
    return(INIT_SUCCEEDED);
   }
 
@@ -387,6 +621,10 @@ void OnDeinit(const int reason)
       IndicatorRelease(atrHandleTP);
    if(atrHandleCustomSL != INVALID_HANDLE)
       IndicatorRelease(atrHandleCustomSL);
+   if(trendEmaFastHandle != INVALID_HANDLE)
+      IndicatorRelease(trendEmaFastHandle);
+   if(trendEmaSlowHandle != INVALID_HANDLE)
+      IndicatorRelease(trendEmaSlowHandle);
   }
 
 //+------------------------------------------------------------------+
@@ -394,6 +632,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
+   ManageOpenPositions();
+
    // Check for a new bar on the decision timeframe
    datetime currentBarTime = iTime(_Symbol, DecisionTimeframe, 0);
    if(currentBarTime == g_lastBarTime)
@@ -442,13 +682,23 @@ void OnTick()
    // Determine direction of decisive candle
    double decOpen  = iOpen(_Symbol, DecisionTimeframe, 1);
    double decClose = iClose(_Symbol, DecisionTimeframe, 1);
+   bool buyAllowed = true;
+   bool sellAllowed = true;
+   if(!GetHTFTrendPermissions(buyAllowed, sellAllowed))
+      return;
    if(decClose > decOpen)
      {
-      EnterTrade(ORDER_TYPE_BUY);
+      if(buyAllowed)
+         EnterTrade(ORDER_TYPE_BUY);
+      else
+         Print("HTF EMA filter blocked BUY entry.");
      }
    else if(decClose < decOpen)
      {
-      EnterTrade(ORDER_TYPE_SELL);
+      if(sellAllowed)
+         EnterTrade(ORDER_TYPE_SELL);
+      else
+         Print("HTF EMA filter blocked SELL entry.");
      }
    else
      {
