@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
-//|                                              SmartCandleV2.mq5   |
+//|                                              SmartCandleV6.mq5   |
 //|                       MQL5 Expert Advisor implementing the       |
-//|                       "Smart Candle V2" strategy.                |
+//|                       "Smart Candle V6" strategy.                |
 //|                                                                  |
 //|  This EA reads a decisive candle on a user‑specified timeframe   |
 //|  at a specific closing time and opens a trade on the next bar    |
