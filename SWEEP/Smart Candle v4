@@ -64,6 +64,8 @@ input int            SwingLookback   = 5;          // Lookback bars for swing SL
 input int            ATR_Custom_Per  = 14;         // ATR period for custom timeframe
 input double         ATR_Custom_Mult = 1.0;        // ATR multiplier for custom timeframe
 input ENUM_TIMEFRAMES ATR_Custom_TF  = PERIOD_H4;  // ATR timeframe for custom SL
+input bool           UseMaxSL_Pips   = true;       // Cap SL at MaxSL_Pips
+input double         MaxSL_Pips      = 200;        // Maximum SL distance in pips
 
 //---- take profit options -------------------------------------------------
 enum TakeProfitMethod
@@ -681,14 +683,57 @@ double NormalizeLotSize(double lots)
   }
 
 //+------------------------------------------------------------------+
+//| Apply max SL cap in pips and validate SL distance                |
+//+------------------------------------------------------------------+
+bool ApplyMaxSLPips(ENUM_ORDER_TYPE type, double entryPrice, double calculatedSL,
+                    double &finalSL, double &slPips, bool &wasCapped)
+  {
+   double pipSize = (_Digits == 3 || _Digits == 5) ? (_Point * 10.0) : _Point;
+   if(type == ORDER_TYPE_BUY)
+      slPips = (entryPrice - calculatedSL) / pipSize;
+   else
+      slPips = (calculatedSL - entryPrice) / pipSize;
+
+   PrintFormat("SL calculated: %.1f pips (price=%s)", slPips, DoubleToString(calculatedSL, _Digits));
+
+   if(slPips <= 0.0)
+     {
+      PrintFormat("Invalid SL distance (<= 0 pips). Entry=%s SL=%s. Trade not opened.",
+                  DoubleToString(entryPrice, _Digits), DoubleToString(calculatedSL, _Digits));
+      return(false);
+     }
+
+   finalSL = calculatedSL;
+   wasCapped = false;
+
+   if(UseMaxSL_Pips && slPips > MaxSL_Pips)
+     {
+      if(type == ORDER_TYPE_BUY)
+         finalSL = entryPrice - (MaxSL_Pips * pipSize);
+      else
+         finalSL = entryPrice + (MaxSL_Pips * pipSize);
+      wasCapped = true;
+      PrintFormat("MaxSL cap applied: %.1f pips -> %.1f pips (price=%s)",
+                  slPips, MaxSL_Pips, DoubleToString(finalSL, _Digits));
+     }
+
+   finalSL = NormalizeDouble(finalSL, _Digits);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
 //| Opens a market position with computed parameters using CTrade.   |
 //| orderType should be ORDER_TYPE_BUY or ORDER_TYPE_SELL.            |
 //+------------------------------------------------------------------+
 void EnterTrade(int orderType)
   {
    // Refresh the environment
-   // Determine entry price as open of current bar on decision timeframe
-   double entryPrice = iOpen(_Symbol, DecisionTimeframe, 0);
+   // Determine entry price from current market quotes
+   double entryPrice = 0.0;
+   if(orderType == ORDER_TYPE_BUY)
+      entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   else
+      entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    if(entryPrice <= 0.0)
       return;
 
@@ -747,6 +792,13 @@ void EnterTrade(int orderType)
       else
          sl = entryPrice + dist;
      }
+
+   double finalSL = sl;
+   double slPips = 0.0;
+   bool wasCapped = false;
+   if(!ApplyMaxSLPips((ENUM_ORDER_TYPE)orderType, entryPrice, sl, finalSL, slPips, wasCapped))
+      return;
+   sl = finalSL;
 
    // Take profit
    if(TP_Method == TP_Fixed)
