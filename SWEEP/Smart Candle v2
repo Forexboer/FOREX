@@ -1,1 +1,457 @@
+//+------------------------------------------------------------------+
+//|                                              SmartCandleV2.mq5   |
+//|                       MQL5 Expert Advisor implementing the       |
+//|                       "Smart Candle V2" strategy.                |
+//|                                                                  |
+//|  This EA reads a decisive candle on a user‑specified timeframe   |
+//|  at a specific closing time and opens a trade on the next bar    |
+//|  based on the candle's direction.  Various stop‑loss and take‑   |
+//|  profit methods are supported, including fixed, ATR‑based and     |
+//|  swing high/low approaches.  Risk management can use a fixed     |
+//|  lot size or a dynamic lot calculated from the account balance   |
+//|  and distance to the stop loss.  The code uses the CTrade class  |
+//|  of the standard library to send trade requests.  ATR indicator  |
+//|  values are obtained via indicator handles and CopyBuffer() as    |
+//|  required by MQL5【718389191056773†L83-L113】.                       |
+//|                                                                  |
+//|  NOTE: This EA is provided for educational purposes and should   |
+//|  be tested on a demo account before live trading.                |
+//+------------------------------------------------------------------+
 
+#property strict
+#property version   "2.0"
+#property description "Smart Candle V2 Expert Advisor (MQL5)"
+
+// Include trade class for order operations
+#include <Trade\Trade.mqh>
+
+//---- input parameters ---------------------------------------------------
+input int              MagicNumber         = 20231117;    // Magic number for identification
+input ENUM_TIMEFRAMES  DecisionTimeframe   = PERIOD_H1;    // Timeframe of the decisive candle
+input string           DecisionTime        = "04:00";     // Closing time of decisive candle (HH:MM server time)
+
+//---- day of week filter: Sunday=0 ... Saturday=6 -----------------------
+input bool             AllowMonday         = true;        // Trade on Monday
+input bool             AllowTuesday        = true;        // Trade on Tuesday
+input bool             AllowWednesday      = true;        // Trade on Wednesday
+input bool             AllowThursday       = true;        // Trade on Thursday
+input bool             AllowFriday         = true;        // Trade on Friday
+
+input bool             UseOneTradePerDay   = true;        // Enforce one trade per day
+input bool             UseNewsFilter       = false;       // Placeholder for news filter (not implemented)
+
+//---- stop loss options --------------------------------------------------
+enum StopLossMethod
+  {
+   SL_Fixed        = 0,   // Fixed stop loss in pips
+   SL_CandleRange  = 1,   // Use high/low of decisive candle
+   SL_ATR_Old      = 2,   // ATR stop loss using same timeframe
+   SL_Swing        = 3,   // Swing high/low based stop loss
+   SL_ATR_Custom   = 4    // ATR stop loss using custom timeframe
+  };
+
+input StopLossMethod SL_Method       = SL_Fixed;
+input double         FixedSLPips     = 50.0;       // Pips for fixed SL
+input int            ATR_SL_Period   = 14;         // ATR period for old method
+input double         ATR_SL_Mult     = 1.0;        // ATR multiplier for old method
+input int            SwingLookback   = 5;          // Lookback bars for swing SL
+input int            ATR_Custom_Per  = 14;         // ATR period for custom timeframe
+input double         ATR_Custom_Mult = 1.0;        // ATR multiplier for custom timeframe
+input ENUM_TIMEFRAMES ATR_Custom_TF  = PERIOD_H4;  // ATR timeframe for custom SL
+
+//---- take profit options -------------------------------------------------
+enum TakeProfitMethod
+  {
+   TP_Fixed   = 0,  // Fixed take profit in pips
+   TP_ATR     = 1   // ATR based take profit (same timeframe)
+  };
+
+input TakeProfitMethod TP_Method      = TP_Fixed;
+input double           FixedTPPips    = 100.0;      // Pips for fixed TP
+input int              ATR_TP_Period  = 14;         // ATR period for TP
+input double           ATR_TP_Mult    = 2.0;        // ATR multiplier for TP
+
+//---- risk management options --------------------------------------------
+enum RiskMethod
+  {
+   RM_FixedLot = 0,      // Always trade fixed lot size
+   RM_RiskPct  = 1       // Risk a percentage of account balance
+  };
+
+input RiskMethod        RM_Method      = RM_FixedLot;
+input double            FixedLotSize   = 0.10;      // Fixed lot size when RM_FixedLot
+input double            RiskPercent    = 1.0;       // Percentage of balance to risk per trade (0..100)
+
+//---- internal state variables ------------------------------------------
+int     g_decisionMinutes     = 0;        // Minutes after midnight for decisive candle close
+datetime g_lastBarTime        = 0;        // Last processed bar time on DecisionTimeframe
+int     g_lastTradeDayOfYear  = -1;       // Day of year of the last trade (for one trade per day)
+
+// ATR indicator handles (created on demand)
+int atrHandleSL  = INVALID_HANDLE;        // Handle for ATR used in stop loss (old method)
+int atrHandleTP  = INVALID_HANDLE;        // Handle for ATR used in take profit
+int atrHandleCustomSL = INVALID_HANDLE;   // Handle for custom timeframe ATR for stop loss
+
+// Trade object
+CTrade trade;
+
+//+------------------------------------------------------------------+
+//| Parse the HH:MM decision time string to minutes after midnight   |
+//+------------------------------------------------------------------+
+int ParseDecisionMinutes(const string timeStr)
+  {
+   int colonPos = StringFind(timeStr, ":");
+   if(colonPos > 0)
+     {
+      string hh = StringSubstr(timeStr, 0, colonPos);
+      string mm = StringSubstr(timeStr, colonPos + 1);
+      int hour  = (int)StringToInteger(hh);
+      int minute= (int)StringToInteger(mm);
+      return(hour * 60 + minute);
+     }
+   return(0);
+  }
+
+//+------------------------------------------------------------------+
+//| Indicator value fetcher for ATR                                  |
+//| Fetches the ATR value at the given shift (start_pos) from the    |
+//| indicator handle using CopyBuffer()【573739094363470†L76-L120】.             |
+//+------------------------------------------------------------------+
+double GetATR(int handle, int shift)
+  {
+   if(handle == INVALID_HANDLE)
+      return(0.0);
+   double buffer[];
+   ArraySetAsSeries(buffer, true);
+   // Copy one value at the specified shift
+   int copied = CopyBuffer(handle, 0, shift, 1, buffer);
+   if(copied == 1)
+      return(buffer[0]);
+   return(0.0);
+  }
+
+//+------------------------------------------------------------------+
+//| Check if trading is allowed on the given day of week             |
+//+------------------------------------------------------------------+
+bool DayAllowed(int dayOfWeek)
+  {
+   // dayOfWeek: 0=Sunday, 1=Monday, ..., 6=Saturday
+   if(dayOfWeek == 1 && AllowMonday)        return(true);
+   if(dayOfWeek == 2 && AllowTuesday)       return(true);
+   if(dayOfWeek == 3 && AllowWednesday)     return(true);
+   if(dayOfWeek == 4 && AllowThursday)      return(true);
+   if(dayOfWeek == 5 && AllowFriday)        return(true);
+   return(false); // Weekends not allowed
+  }
+
+//+------------------------------------------------------------------+
+//| Placeholder for news filter. Returns false if not blocked.       |
+//+------------------------------------------------------------------+
+bool NewsBlocked()
+  {
+   if(!UseNewsFilter)
+      return(false);
+   // Real news filtering would require external data. Not implemented.
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Calculates dynamic lot size based on risk percentage.            |
+//| Uses symbol properties for tick size, tick value and volume      |
+//| limits【777576027852568†L390-L460】.                               |
+//+------------------------------------------------------------------+
+double CalculateLotSize(double entryPrice, double stopPrice, double riskPct)
+  {
+   // Return fixed lot if RM is fixed
+   double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskAmount     = accountBalance * riskPct / 100.0;
+   double distance       = MathAbs(entryPrice - stopPrice);
+   if(distance <= 0.0 || riskAmount <= 0.0)
+      return(0.0);
+   // Retrieve tick size and tick value for profit or loss
+   double tickSize    = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE); // value per tick
+   if(tickSize <= 0.0 || tickValue <= 0.0)
+      return(0.0);
+   // Convert price distance into ticks
+   double ticks       = distance / tickSize;
+   // Cost of one lot for the distance
+   double costPerLot  = ticks * tickValue;
+   if(costPerLot <= 0.0)
+      return(0.0);
+   // Calculate raw lots
+   double lots        = riskAmount / costPerLot;
+   return(lots);
+  }
+
+//+------------------------------------------------------------------+
+//| Normalize lot size to allowed broker constraints                 |
+//+------------------------------------------------------------------+
+double NormalizeLotSize(double lots)
+  {
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lotStep= SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(lotStep <= 0.0)
+      lotStep = 1.0;
+   if(lots < minLot)
+      lots = minLot;
+   if(lots > maxLot)
+      lots = maxLot;
+   // Align to volume step
+   lots = MathFloor(lots / lotStep) * lotStep;
+   return(lots);
+  }
+
+//+------------------------------------------------------------------+
+//| Opens a market position with computed parameters using CTrade.   |
+//| orderType should be ORDER_TYPE_BUY or ORDER_TYPE_SELL.            |
+//+------------------------------------------------------------------+
+void EnterTrade(int orderType)
+  {
+   // Refresh the environment
+   // Determine entry price as open of current bar on decision timeframe
+   double entryPrice = iOpen(_Symbol, DecisionTimeframe, 0);
+   if(entryPrice <= 0.0)
+      return;
+
+   // Compute stop loss (sl) and take profit (tp)
+   double sl = 0.0;
+   double tp = 0.0;
+
+   // Fixed SL
+   if(SL_Method == SL_Fixed)
+     {
+      double slDist = FixedSLPips * _Point;
+      if(orderType == ORDER_TYPE_BUY)
+         sl = entryPrice - slDist;
+      else
+         sl = entryPrice + slDist;
+     }
+   else if(SL_Method == SL_CandleRange)
+     {
+      // Use high/low of decisive candle (index 1)
+      double decLow  = iLow(_Symbol, DecisionTimeframe, 1);
+      double decHigh = iHigh(_Symbol, DecisionTimeframe, 1);
+      if(orderType == ORDER_TYPE_BUY)
+         sl = decLow;
+      else
+         sl = decHigh;
+     }
+   else if(SL_Method == SL_ATR_Old)
+     {
+      double atr = GetATR(atrHandleSL, 1);
+      double dist = atr * ATR_SL_Mult;
+      if(orderType == ORDER_TYPE_BUY)
+         sl = entryPrice - dist;
+      else
+         sl = entryPrice + dist;
+     }
+   else if(SL_Method == SL_Swing)
+     {
+      // Swing high/low based on last SwingLookback bars ending at index 1
+      if(orderType == ORDER_TYPE_BUY)
+        {
+         int lowShift = iLowest(_Symbol, DecisionTimeframe, MODE_LOW, SwingLookback, 1);
+         sl = iLow(_Symbol, DecisionTimeframe, lowShift);
+        }
+      else
+        {
+         int highShift = iHighest(_Symbol, DecisionTimeframe, MODE_HIGH, SwingLookback, 1);
+         sl = iHigh(_Symbol, DecisionTimeframe, highShift);
+        }
+     }
+   else if(SL_Method == SL_ATR_Custom)
+     {
+      double atr = GetATR(atrHandleCustomSL, 1);
+      double dist = atr * ATR_Custom_Mult;
+      if(orderType == ORDER_TYPE_BUY)
+         sl = entryPrice - dist;
+      else
+         sl = entryPrice + dist;
+     }
+
+   // Take profit
+   if(TP_Method == TP_Fixed)
+     {
+      double tpDist = FixedTPPips * _Point;
+      if(orderType == ORDER_TYPE_BUY)
+         tp = entryPrice + tpDist;
+      else
+         tp = entryPrice - tpDist;
+     }
+   else if(TP_Method == TP_ATR)
+     {
+      double atr = GetATR(atrHandleTP, 1);
+      double dist = atr * ATR_TP_Mult;
+      if(orderType == ORDER_TYPE_BUY)
+         tp = entryPrice + dist;
+      else
+         tp = entryPrice - dist;
+     }
+
+   // Determine lot size
+   double lots;
+   if(RM_Method == RM_FixedLot)
+     {
+      lots = FixedLotSize;
+     }
+   else
+     {
+      lots = CalculateLotSize(entryPrice, sl, RiskPercent);
+     }
+   lots = NormalizeLotSize(lots);
+   if(lots <= 0.0)
+     {
+      Print("Lot size calculated as zero. Trade not opened.");
+      return;
+     }
+
+   // Set slippage/deviation in points (optional). Here 10 points.
+   trade.SetDeviationInPoints(10);
+   // Set the Magic number for this expert
+   trade.SetExpertMagicNumber(MagicNumber);
+
+   bool result;
+   if(orderType == ORDER_TYPE_BUY)
+     {
+      result = trade.Buy(lots, _Symbol, entryPrice, sl, tp, "Smart Candle V2");
+     }
+   else
+     {
+      result = trade.Sell(lots, _Symbol, entryPrice, sl, tp, "Smart Candle V2");
+     }
+   if(!result)
+     {
+      // Failed to send trade request
+      Print("OrderSend failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      return;
+     }
+   // If trade request accepted, update last trade day for one trade per day
+   if(trade.ResultRetcode() == TRADE_RETCODE_DONE)
+     {
+      /*
+         In MQL5 there is no TimeDayOfYear() function (it exists in MQL4 only).
+         To obtain the day-of-year value, convert the current server time to an
+         MqlDateTime structure using TimeToStruct().  The structure field
+         day_of_year contains the day number starting from 0 for January 1st.
+      */
+      MqlDateTime nowStruct;
+      datetime nowTime = TimeCurrent();
+      TimeToStruct(nowTime, nowStruct);
+      g_lastTradeDayOfYear = nowStruct.day_of_year;
+      Print("Trade opened: Ticket=", trade.ResultOrder(), " Type=", orderType,
+            " Lots=", lots, " SL=", sl, " TP=", tp);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   // Parse decision time once
+   g_decisionMinutes = ParseDecisionMinutes(DecisionTime);
+
+   // Create ATR handles as needed
+   // ATR for stop loss (old method) or TP if same period
+   if(SL_Method == SL_ATR_Old || TP_Method == TP_ATR)
+     {
+      // For old SL we use ATR_SL_Period; for TP we may use ATR_TP_Period
+      atrHandleSL = iATR(_Symbol, DecisionTimeframe, ATR_SL_Period);
+      if(TP_Method == TP_ATR)
+        {
+         // If TP uses a different period, create separate handle
+         if(ATR_TP_Period != ATR_SL_Period)
+            atrHandleTP = iATR(_Symbol, DecisionTimeframe, ATR_TP_Period);
+         else
+            atrHandleTP = atrHandleSL;
+        }
+     }
+   if(SL_Method == SL_ATR_Custom)
+     {
+      atrHandleCustomSL = iATR(_Symbol, ATR_Custom_TF, ATR_Custom_Per);
+     }
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+   // Release indicator handles
+   if(atrHandleSL != INVALID_HANDLE)
+      IndicatorRelease(atrHandleSL);
+   if(atrHandleTP != INVALID_HANDLE && atrHandleTP != atrHandleSL)
+      IndicatorRelease(atrHandleTP);
+   if(atrHandleCustomSL != INVALID_HANDLE)
+      IndicatorRelease(atrHandleCustomSL);
+  }
+
+//+------------------------------------------------------------------+
+//| Main event handler called on every tick                          |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+   // Check for a new bar on the decision timeframe
+   datetime currentBarTime = iTime(_Symbol, DecisionTimeframe, 0);
+   if(currentBarTime == g_lastBarTime)
+      return;
+   g_lastBarTime = currentBarTime;
+
+   // Decisive candle is the previous bar (shift 1)
+   datetime decTime = iTime(_Symbol, DecisionTimeframe, 1);
+   if(decTime <= 0)
+      return;
+   // Break down the decisive candle time into its components using TimeToStruct().
+   // MqlDateTime contains fields such as hour, min, day_of_week and day_of_year.
+   MqlDateTime decStruct;
+   TimeToStruct(decTime, decStruct);
+   // Combine hour and minute into total minutes after midnight
+   int decMinutes = decStruct.hour * 60 + decStruct.min;
+   // Ensure the decisive candle closed exactly at the configured time
+   if(decMinutes != g_decisionMinutes)
+      return;
+   // Check day-of-week filter. day_of_week: 0=Sunday, 1=Monday, ..., 6=Saturday
+   int dow = decStruct.day_of_week;
+   if(!DayAllowed(dow))
+      return;
+   // Check one trade per day restriction
+   if(UseOneTradePerDay)
+     {
+      int today = decStruct.day_of_year;
+      if(today == g_lastTradeDayOfYear)
+         return;
+      // Also ensure there is no open position on this symbol and magic number
+      for(int pos=PositionsTotal()-1; pos>=0; pos--)
+        {
+         ulong ticket = PositionGetTicket(pos);
+         if(PositionSelectByTicket(ticket))
+           {
+            long magic = PositionGetInteger(POSITION_MAGIC);
+            string sym = PositionGetString(POSITION_SYMBOL);
+            if(magic == MagicNumber && sym == _Symbol)
+               return; // already an open position
+           }
+        }
+     }
+   // Check news filter
+   if(NewsBlocked())
+      return;
+   // Determine direction of decisive candle
+   double decOpen  = iOpen(_Symbol, DecisionTimeframe, 1);
+   double decClose = iClose(_Symbol, DecisionTimeframe, 1);
+   if(decClose > decOpen)
+     {
+      EnterTrade(ORDER_TYPE_BUY);
+     }
+   else if(decClose < decOpen)
+     {
+      EnterTrade(ORDER_TYPE_SELL);
+     }
+   else
+     {
+      Print("Decisive candle is doji. No trade opened.");
+     }
+  }
