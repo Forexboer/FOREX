@@ -94,10 +94,32 @@ input int               MaxTradeMinutes     = 0;                     // Max trad
 input bool              EnableExitLogging   = false;                 // Enable exit logging to CSV
 input string            ExitLogFile         = "SmartCandleV2_ExitLog.csv"; // Exit log file name
 
+//---- profit protection: lock profit ------------------------------------
+input bool              UseLockProfit       = false;                 // Enable lock-profit protection
+input double            LockTriggerPoints   = 200.0;                 // Trigger (points in profit) to lock
+input double            LockBufferPoints    = 10.0;                  // Buffer (points) beyond break-even
+input bool              UseFixedLockLevel   = false;                 // Use fixed lock level instead of break-even+buffer
+input double            FixedLockPoints     = 50.0;                  // Fixed lock level (points from entry)
+
+//---- trailing stop: profit build ---------------------------------------
+input bool              UseTrailingStop     = false;                 // Enable trailing stop
+input double            TrailStartPoints    = 300.0;                 // Start trailing after this profit (points)
+input double            TrailDistancePoints = 150.0;                 // Trailing distance (points)
+input double            TrailStepPoints     = 0.0;                   // Minimum improvement (points) to update
+
+//---- EMA slope exit: trend exit ----------------------------------------
+input bool              UseEMA_Slope_Exit   = false;                 // Enable EMA slope exit
+input ENUM_TIMEFRAMES   SlopeEMA_TF         = PERIOD_H4;             // Timeframe for EMA slope
+input int               SlopeEMA_Period     = 40;                    // EMA period for slope
+input int               SlopeLookbackN      = 3;                     // Lookback bars for slope
+input double            SlopeThreshold      = 0.0;                   // Slope threshold (price units)
+
 //---- internal state variables ------------------------------------------
 int     g_decisionMinutes     = 0;        // Minutes after midnight for decisive candle close
 datetime g_lastBarTime        = 0;        // Last processed bar time on DecisionTimeframe
 int     g_lastTradeDayOfYear  = -1;       // Day of year of the last trade (for one trade per day)
+datetime g_lastHtfEmaLogTime  = 0;        // Last bar time for HTF EMA log gating
+datetime g_lastSlopeBarTime   = 0;        // Last bar time for EMA slope exit
 
 // ATR indicator handles (created on demand)
 int atrHandleSL  = INVALID_HANDLE;        // Handle for ATR used in stop loss (old method)
@@ -107,6 +129,7 @@ int atrHandleCustomSL = INVALID_HANDLE;   // Handle for custom timeframe ATR for
 // Trend EMA handles for entry filter
 int trendEmaFastHandle = INVALID_HANDLE;
 int trendEmaSlowHandle = INVALID_HANDLE;
+int slopeEmaHandle     = INVALID_HANDLE;
 
 // Trade object
 CTrade trade;
@@ -162,6 +185,39 @@ double GetEMA(int handle, int shift)
   }
 
 //+------------------------------------------------------------------+
+//| Determine if a new bar has opened for a timeframe                |
+//+------------------------------------------------------------------+
+bool IsNewBar(ENUM_TIMEFRAMES tf, datetime &lastBarTime)
+  {
+   datetime currentBarTime = iTime(_Symbol, tf, 0);
+   if(currentBarTime <= 0)
+      return(false);
+   if(currentBarTime != lastBarTime)
+     {
+      lastBarTime = currentBarTime;
+      return(true);
+     }
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Fetch EMA value safely using CopyBuffer                          |
+//+------------------------------------------------------------------+
+bool GetEMAValue(int handle, int shift, double &value)
+  {
+   value = 0.0;
+   if(handle == INVALID_HANDLE)
+      return(false);
+   double buffer[];
+   ArraySetAsSeries(buffer, true);
+   int copied = CopyBuffer(handle, 0, shift, 1, buffer);
+   if(copied != 1)
+      return(false);
+   value = buffer[0];
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
 //| Check if trading is allowed on the given day of week             |
 //+------------------------------------------------------------------+
 bool DayAllowed(int dayOfWeek)
@@ -189,28 +245,35 @@ bool NewsBlocked()
 //+------------------------------------------------------------------+
 //| Determine HTF EMA trend permissions for entries                  |
 //+------------------------------------------------------------------+
-bool GetHTFTrendPermissions(bool &buyAllowed, bool &sellAllowed)
+bool GetHTFDirectionAllow(bool &buyAllowed, bool &sellAllowed)
   {
    buyAllowed = true;
    sellAllowed = true;
    if(!UseHTF_EMA_Filter)
       return(true);
 
+   if(trendEmaFastHandle == INVALID_HANDLE)
+      trendEmaFastHandle = iMA(_Symbol, TrendEMA_TF, TrendEMA_Fast, 0, MODE_EMA, PRICE_CLOSE);
+   if(trendEmaSlowHandle == INVALID_HANDLE)
+      trendEmaSlowHandle = iMA(_Symbol, TrendEMA_TF, TrendEMA_Slow, 0, MODE_EMA, PRICE_CLOSE);
+
    if(trendEmaFastHandle == INVALID_HANDLE || trendEmaSlowHandle == INVALID_HANDLE)
      {
       buyAllowed = false;
       sellAllowed = false;
-      Print("HTF EMA filter handles are invalid.");
+      if(IsNewBar(TrendEMA_TF, g_lastHtfEmaLogTime))
+         Print("HTF EMA filter handles are invalid.");
       return(false);
      }
 
-   double emaFast = GetEMA(trendEmaFastHandle, 1);
-   double emaSlow = GetEMA(trendEmaSlowHandle, 1);
-   if(emaFast == 0.0 || emaSlow == 0.0)
+   double emaFast = 0.0;
+   double emaSlow = 0.0;
+   if(!GetEMAValue(trendEmaFastHandle, 1, emaFast) || !GetEMAValue(trendEmaSlowHandle, 1, emaSlow))
      {
       buyAllowed = false;
       sellAllowed = false;
-      Print("HTF EMA filter data unavailable.");
+      if(IsNewBar(TrendEMA_TF, g_lastHtfEmaLogTime))
+         Print("HTF EMA filter data unavailable.");
       return(false);
      }
 
@@ -230,6 +293,180 @@ bool GetHTFTrendPermissions(bool &buyAllowed, bool &sellAllowed)
       sellAllowed = false;
      }
    return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Calculate position profit in points                              |
+//+------------------------------------------------------------------+
+double GetPositionProfitPoints(const long positionType, const double openPrice)
+  {
+   if(positionType == POSITION_TYPE_BUY)
+      return((SymbolInfoDouble(_Symbol, SYMBOL_BID) - openPrice) / _Point);
+   return((openPrice - SymbolInfoDouble(_Symbol, SYMBOL_ASK)) / _Point);
+  }
+
+//+------------------------------------------------------------------+
+//| Check if an SL modification respects broker stops/freeze         |
+//+------------------------------------------------------------------+
+bool CanModifyStop(const long positionType, const double desiredSl)
+  {
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double currentPrice = (positionType == POSITION_TYPE_BUY ? bid : ask);
+   if(positionType == POSITION_TYPE_BUY && desiredSl >= bid)
+      return(false);
+   if(positionType == POSITION_TYPE_SELL && desiredSl <= ask)
+      return(false);
+
+   int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int freezeLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double distancePoints = MathAbs(currentPrice - desiredSl) / _Point;
+   if(stopsLevel > 0 && distancePoints < stopsLevel)
+      return(false);
+   if(freezeLevel > 0 && distancePoints <= freezeLevel)
+      return(false);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Apply lock profit to position                                    |
+//+------------------------------------------------------------------+
+bool ApplyLockProfitToPosition(ulong ticket)
+  {
+   if(!UseLockProfit)
+      return(false);
+   if(!PositionSelectByTicket(ticket))
+      return(false);
+
+   long positionType = PositionGetInteger(POSITION_TYPE);
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentSl = PositionGetDouble(POSITION_SL);
+   double tp = PositionGetDouble(POSITION_TP);
+
+   double profitPoints = GetPositionProfitPoints(positionType, openPrice);
+   if(profitPoints < LockTriggerPoints)
+      return(false);
+
+   double desiredSl;
+   if(UseFixedLockLevel)
+     {
+      desiredSl = (positionType == POSITION_TYPE_BUY
+                   ? openPrice + FixedLockPoints * _Point
+                   : openPrice - FixedLockPoints * _Point);
+     }
+   else
+     {
+      desiredSl = (positionType == POSITION_TYPE_BUY
+                   ? openPrice + LockBufferPoints * _Point
+                   : openPrice - LockBufferPoints * _Point);
+     }
+   desiredSl = NormalizeDouble(desiredSl, _Digits);
+
+   if(positionType == POSITION_TYPE_BUY)
+     {
+      if(currentSl != 0.0 && desiredSl <= currentSl)
+         return(false);
+     }
+   else
+     {
+      if(currentSl != 0.0 && desiredSl >= currentSl)
+         return(false);
+     }
+   if(!CanModifyStop(positionType, desiredSl))
+      return(false);
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   return(trade.PositionModify(_Symbol, desiredSl, tp));
+  }
+
+//+------------------------------------------------------------------+
+//| Apply trailing stop to position                                  |
+//+------------------------------------------------------------------+
+bool ApplyTrailingStopToPosition(ulong ticket)
+  {
+   if(!UseTrailingStop)
+      return(false);
+   if(!PositionSelectByTicket(ticket))
+      return(false);
+
+   long positionType = PositionGetInteger(POSITION_TYPE);
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentSl = PositionGetDouble(POSITION_SL);
+   double tp = PositionGetDouble(POSITION_TP);
+   double profitPoints = GetPositionProfitPoints(positionType, openPrice);
+   if(profitPoints < TrailStartPoints)
+      return(false);
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double desiredSl = (positionType == POSITION_TYPE_BUY
+                       ? bid - TrailDistancePoints * _Point
+                       : ask + TrailDistancePoints * _Point);
+   desiredSl = NormalizeDouble(desiredSl, _Digits);
+
+   if(positionType == POSITION_TYPE_BUY)
+     {
+      if(currentSl != 0.0 && desiredSl <= currentSl)
+         return(false);
+      if(TrailStepPoints > 0.0 && currentSl != 0.0)
+        {
+         double improvement = (desiredSl - currentSl) / _Point;
+         if(improvement < TrailStepPoints)
+            return(false);
+        }
+     }
+   else
+     {
+      if(currentSl != 0.0 && desiredSl >= currentSl)
+         return(false);
+      if(TrailStepPoints > 0.0 && currentSl != 0.0)
+        {
+         double improvement = (currentSl - desiredSl) / _Point;
+         if(improvement < TrailStepPoints)
+            return(false);
+        }
+     }
+   if(!CanModifyStop(positionType, desiredSl))
+      return(false);
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   return(trade.PositionModify(_Symbol, desiredSl, tp));
+  }
+
+//+------------------------------------------------------------------+
+//| Check EMA slope exit and close position if triggered             |
+//+------------------------------------------------------------------+
+bool CheckAndCloseByEMASlope(ulong ticket, const long positionType)
+  {
+   if(!UseEMA_Slope_Exit)
+      return(false);
+   if(!PositionSelectByTicket(ticket))
+      return(false);
+
+   if(slopeEmaHandle == INVALID_HANDLE)
+      slopeEmaHandle = iMA(_Symbol, SlopeEMA_TF, SlopeEMA_Period, 0, MODE_EMA, PRICE_CLOSE);
+   if(slopeEmaHandle == INVALID_HANDLE)
+      return(false);
+
+   double emaNow = 0.0;
+   double emaPast = 0.0;
+   if(!GetEMAValue(slopeEmaHandle, 1, emaNow))
+      return(false);
+   if(!GetEMAValue(slopeEmaHandle, 1 + SlopeLookbackN, emaPast))
+      return(false);
+
+   double slope = emaNow - emaPast;
+   if(positionType == POSITION_TYPE_BUY)
+     {
+      if(slope <= SlopeThreshold)
+         return(TryClosePosition(ticket, "EMASlopeExit", -1));
+     }
+   else
+     {
+      if(slope >= -SlopeThreshold)
+         return(TryClosePosition(ticket, "EMASlopeExit", -1));
+     }
+   return(false);
   }
 
 //+------------------------------------------------------------------+
@@ -361,6 +598,10 @@ bool TryClosePosition(ulong ticket, const string reason, int durationMin)
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
   {
+   bool slopeNewBar = false;
+   if(UseEMA_Slope_Exit)
+      slopeNewBar = IsNewBar(SlopeEMA_TF, g_lastSlopeBarTime);
+
    for(int pos = PositionsTotal() - 1; pos >= 0; pos--)
      {
       ulong ticket = PositionGetTicket(pos);
@@ -378,9 +619,16 @@ void ManageOpenPositions()
             continue;
         }
 
-      // Existing exit modules (lock profit, trailing stop, EMA slope exit)
-      // are expected to be evaluated here without more than one close attempt
-      // per position per tick. This EA currently has no additional exit logic.
+      if(UseLockProfit)
+         ApplyLockProfitToPosition(ticket);
+      if(UseTrailingStop)
+         ApplyTrailingStopToPosition(ticket);
+      if(slopeNewBar)
+        {
+         long positionType = PositionGetInteger(POSITION_TYPE);
+         if(CheckAndCloseByEMASlope(ticket, positionType))
+            continue;
+        }
      }
   }
 
@@ -606,6 +854,10 @@ int OnInit()
       trendEmaFastHandle = iMA(_Symbol, TrendEMA_TF, TrendEMA_Fast, 0, MODE_EMA, PRICE_CLOSE);
       trendEmaSlowHandle = iMA(_Symbol, TrendEMA_TF, TrendEMA_Slow, 0, MODE_EMA, PRICE_CLOSE);
      }
+   if(UseEMA_Slope_Exit)
+     {
+      slopeEmaHandle = iMA(_Symbol, SlopeEMA_TF, SlopeEMA_Period, 0, MODE_EMA, PRICE_CLOSE);
+     }
    return(INIT_SUCCEEDED);
   }
 
@@ -625,6 +877,8 @@ void OnDeinit(const int reason)
       IndicatorRelease(trendEmaFastHandle);
    if(trendEmaSlowHandle != INVALID_HANDLE)
       IndicatorRelease(trendEmaSlowHandle);
+   if(slopeEmaHandle != INVALID_HANDLE)
+      IndicatorRelease(slopeEmaHandle);
   }
 
 //+------------------------------------------------------------------+
@@ -684,7 +938,7 @@ void OnTick()
    double decClose = iClose(_Symbol, DecisionTimeframe, 1);
    bool buyAllowed = true;
    bool sellAllowed = true;
-   if(!GetHTFTrendPermissions(buyAllowed, sellAllowed))
+   if(!GetHTFDirectionAllow(buyAllowed, sellAllowed))
       return;
    if(decClose > decOpen)
      {
