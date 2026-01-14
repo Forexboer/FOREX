@@ -70,6 +70,18 @@ input string      DirectEndTime        ="23:59";   // Direct method allowed end
 input string      CandleStartTime      ="00:00";   // Candle-close method allowed start
 input string      CandleEndTime        ="23:59";   // Candle-close method allowed end
 
+input group       "HTF EMA Filter"
+input bool        UseHTF_EMA_Filter    =true;
+input ENUM_TIMEFRAMES HTF_TF           =PERIOD_H4; // example H1/H4/D1
+input int         EMA_Fast_Period      =40;
+input int         EMA_Slow_Period      =50;
+input int         HTF_Shift            =1;         // last CLOSED HTF candle
+
+input group       "EMA Slope TP Filter"
+input bool        UseEMA_Slope_TP_Filter =true;
+input int         Slope_Lookback_Bars  =5;        // N, e.g. 3/5/10
+input double      Slope_Threshold      =0.0;      // optional noise filter (in raw EMA units)
+
 input group       "Stop Loss"
 input ENUM_SL_METHOD StopLossMethod    =SL_OppositeBoxSide;
 input double      SL_FixedPipsValue    =50;
@@ -164,6 +176,9 @@ Session      sessions[3];
 bool         isNewBar=true;
 datetime     lastBarTime=0;
 int          g_last_day=-1;
+int          g_htf_ema_fast_handle=INVALID_HANDLE;
+int          g_htf_ema_slow_handle=INVALID_HANDLE;
+datetime     g_last_htf_candle_time=0;
 
 //--- function prototypes
 void   InitSessions();
@@ -183,6 +198,13 @@ void   ApplyBreakeven();
 void   ApplyTrailing();
 void   TimeExits();
 void   DailyClosures();
+bool   InitializeHTFEMAHandles();
+void   ReleaseHTFEMAHandles();
+bool   GetHTFTrendPermissions(bool &buyAllowed,bool &sellAllowed);
+bool   IsNewHTFCandle();
+bool   CheckSlopeExitSignalForPosition(ulong positionTicket,bool &shouldExit);
+void   ExecuteSlopeExitForPosition(ulong positionTicket);
+void   ProcessSlopeExitOnNewHTFCandle();
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                           |
@@ -192,12 +214,15 @@ int OnInit()
    trade.SetExpertMagicNumber(InpMagicNumber);
    InitSessions();
    lastBarTime=0;
+   if(!InitializeHTFEMAHandles())
+      return(INIT_FAILED);
    return(INIT_SUCCEEDED);
   }
 
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   ReleaseHTFEMAHandles();
    // delete objects
    for(int i=0;i<3;i++)
      {
@@ -218,6 +243,7 @@ void OnTick()
 
    UpdateSessions();
    CheckBreakouts();
+   ProcessSlopeExitOnNewHTFCandle();
    ManagePositions();
    ApplyBreakeven();
    ApplyTrailing();
@@ -341,8 +367,195 @@ bool TimeFilter(string start,string end)
   }
 
 //+------------------------------------------------------------------+
+bool InitializeHTFEMAHandles()
+  {
+   if(!UseHTF_EMA_Filter && !UseEMA_Slope_TP_Filter)
+      return true;
+   g_htf_ema_fast_handle=iMA(_Symbol,HTF_TF,EMA_Fast_Period,0,MODE_EMA,PRICE_CLOSE);
+   if(g_htf_ema_fast_handle==INVALID_HANDLE)
+     {
+      Print("Failed to create HTF fast EMA handle");
+      return false;
+     }
+   g_htf_ema_slow_handle=iMA(_Symbol,HTF_TF,EMA_Slow_Period,0,MODE_EMA,PRICE_CLOSE);
+   if(g_htf_ema_slow_handle==INVALID_HANDLE)
+     {
+      Print("Failed to create HTF slow EMA handle");
+      return false;
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+void ReleaseHTFEMAHandles()
+  {
+   if(g_htf_ema_fast_handle!=INVALID_HANDLE)
+     {
+      IndicatorRelease(g_htf_ema_fast_handle);
+      g_htf_ema_fast_handle=INVALID_HANDLE;
+     }
+   if(g_htf_ema_slow_handle!=INVALID_HANDLE)
+     {
+      IndicatorRelease(g_htf_ema_slow_handle);
+      g_htf_ema_slow_handle=INVALID_HANDLE;
+     }
+  }
+
+//+------------------------------------------------------------------+
+bool GetHTFTrendPermissions(bool &buyAllowed,bool &sellAllowed)
+  {
+   buyAllowed=true;
+   sellAllowed=true;
+   if(!UseHTF_EMA_Filter)
+      return true;
+   if(g_htf_ema_fast_handle==INVALID_HANDLE || g_htf_ema_slow_handle==INVALID_HANDLE)
+      return false;
+   double emaFast[];
+   double emaSlow[];
+   ArraySetAsSeries(emaFast,true);
+   ArraySetAsSeries(emaSlow,true);
+   if(CopyBuffer(g_htf_ema_fast_handle,0,HTF_Shift,1,emaFast)<1)
+      return false;
+   if(CopyBuffer(g_htf_ema_slow_handle,0,HTF_Shift,1,emaSlow)<1)
+      return false;
+   if(emaFast[0]>emaSlow[0])
+     {
+      buyAllowed=true;
+      sellAllowed=false;
+     }
+   else if(emaFast[0]<emaSlow[0])
+     {
+      buyAllowed=false;
+      sellAllowed=true;
+     }
+   else
+     {
+      buyAllowed=false;
+      sellAllowed=false;
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+bool IsNewHTFCandle()
+  {
+   datetime htf_time=iTime(_Symbol,HTF_TF,0);
+   if(htf_time==0)
+      return false;
+   if(g_last_htf_candle_time!=htf_time)
+     {
+      g_last_htf_candle_time=htf_time;
+      return true;
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+bool CheckSlopeExitSignalForPosition(ulong positionTicket,bool &shouldExit)
+  {
+   shouldExit=false;
+   if(!UseEMA_Slope_TP_Filter)
+      return true;
+   if(g_htf_ema_fast_handle==INVALID_HANDLE || g_htf_ema_slow_handle==INVALID_HANDLE)
+      return false;
+   if(!PositionSelectByTicket(positionTicket))
+      return false;
+   bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
+   int lookback=Slope_Lookback_Bars;
+   if(lookback<1)
+      lookback=1;
+   double emaFast[];
+   double emaSlow[];
+   ArraySetAsSeries(emaFast,true);
+   ArraySetAsSeries(emaSlow,true);
+   int needed=lookback+1;
+   ArrayResize(emaFast,needed);
+   ArrayResize(emaSlow,needed);
+   if(CopyBuffer(g_htf_ema_fast_handle,0,1,needed,emaFast)<needed)
+      return false;
+   if(CopyBuffer(g_htf_ema_slow_handle,0,1,needed,emaSlow)<needed)
+      return false;
+   double emaFastNow=emaFast[0];
+   double emaFastPrev=emaFast[lookback];
+   double emaSlowNow=emaSlow[0];
+   double emaSlowPrev=emaSlow[lookback];
+   double slopeFast=emaFastNow-emaFastPrev;
+   double slopeSlow=emaSlowNow-emaSlowPrev;
+   if(isBuy)
+     {
+      if(slopeFast<=Slope_Threshold || slopeSlow<=Slope_Threshold)
+         shouldExit=true;
+      if(emaFastNow<emaSlowNow)
+         shouldExit=true;
+     }
+   else
+     {
+      if(slopeFast>=-Slope_Threshold || slopeSlow>=-Slope_Threshold)
+         shouldExit=true;
+      if(emaFastNow>emaSlowNow)
+         shouldExit=true;
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+void ExecuteSlopeExitForPosition(ulong positionTicket)
+  {
+   if(!PositionSelectByTicket(positionTicket))
+      return;
+   if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber)
+      return;
+   double volume=PositionGetDouble(POSITION_VOLUME);
+   bool tpen[3]={TP1_Enable,TP2_Enable,TP3_Enable};
+   int enabled_count=0;
+   for(int i=0;i<3;i++)
+      if(tpen[i]) enabled_count++;
+   double close_percent=0.0;
+   if(tpen[0])
+     {
+      close_percent=TP1_ClosePercent;
+      if(enabled_count==1)
+         close_percent=100.0;
+     }
+   if(close_percent<=0.0 || close_percent>=100.0)
+     {
+      trade.PositionClose(positionTicket);
+      return;
+     }
+   double close_vol=volume*(close_percent/100.0);
+   if(close_vol>volume)
+      close_vol=volume;
+   if(!trade.PositionClosePartial(positionTicket,close_vol))
+      trade.PositionClose(positionTicket);
+  }
+
+//+------------------------------------------------------------------+
+void ProcessSlopeExitOnNewHTFCandle()
+  {
+   if(!UseEMA_Slope_TP_Filter)
+      return;
+   if(!IsNewHTFCandle())
+      return;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
+      bool shouldExit=false;
+      if(!CheckSlopeExitSignalForPosition(ticket,shouldExit))
+         continue;
+      if(shouldExit)
+         ExecuteSlopeExitForPosition(ticket);
+     }
+  }
+
+//+------------------------------------------------------------------+
 void CheckBreakouts()
   {
+   bool permissionsChecked=false;
+   bool buyAllowed=true;
+   bool sellAllowed=true;
    for(int i=0;i<3;i++)
      {
       if(!sessions[i].enabled || !sessions[i].box_ready) continue;
@@ -356,6 +569,14 @@ void CheckBreakouts()
         {
          if(!sessions[i].buy_done && ask>high)
            {
+            if(!permissionsChecked)
+              {
+               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+                  return;
+               permissionsChecked=true;
+              }
+            if(!buyAllowed)
+               continue;
             double sl=CalcStopLoss(true,high,low,ask,StopLossMethod,SL_FixedPipsValue);
             double tp1=0,tp2=0,tp3=0;
             PlaceOrder(true,sl,tp1,tp2,tp3);
@@ -363,6 +584,14 @@ void CheckBreakouts()
            }
          if(!sessions[i].sell_done && bid<low)
            {
+            if(!permissionsChecked)
+              {
+               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+                  return;
+               permissionsChecked=true;
+              }
+            if(!sellAllowed)
+               continue;
             double sl=CalcStopLoss(false,high,low,bid,StopLossMethod,SL_FixedPipsValue);
             double tp1=0,tp2=0,tp3=0;
             PlaceOrder(false,sl,tp1,tp2,tp3);
@@ -384,12 +613,28 @@ void CheckBreakouts()
            }
          if(buy_break && !sessions[i].buy_done)
            {
+            if(!permissionsChecked)
+              {
+               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+                  return;
+               permissionsChecked=true;
+              }
+            if(!buyAllowed)
+               continue;
             double sl=CalcStopLoss(true,high,low,ask,StopLossMethod,SL_FixedPipsValue);
             PlaceOrder(true,sl,0,0,0);
             sessions[i].buy_done=true;
            }
          if(sell_break && !sessions[i].sell_done)
            {
+            if(!permissionsChecked)
+              {
+               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+                  return;
+               permissionsChecked=true;
+              }
+            if(!sellAllowed)
+               continue;
             double sl=CalcStopLoss(false,high,low,bid,StopLossMethod,SL_FixedPipsValue);
             PlaceOrder(false,sl,0,0,0);
             sessions[i].sell_done=true;
