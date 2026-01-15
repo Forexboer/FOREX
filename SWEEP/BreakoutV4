@@ -76,6 +76,10 @@ input ENUM_TIMEFRAMES HTF_TF           =PERIOD_H4; // example H1/H4/D1
 input int         EMA_Fast_Period      =40;
 input int         EMA_Slow_Period      =50;
 input int         HTF_Shift            =1;         // last CLOSED HTF candle
+input bool        UseTrendSnapshot     =true;      // lock trend once per range
+
+input group       "HTF Trend Label"
+input bool        ShowTrendLabel       =true;
 
 input group       "EMA Slope TP Filter"
 input bool        UseEMA_Slope_TP_Filter =true;
@@ -179,6 +183,12 @@ int          g_last_day=-1;
 int          g_htf_ema_fast_handle=INVALID_HANDLE;
 int          g_htf_ema_slow_handle=INVALID_HANDLE;
 datetime     g_last_htf_candle_time=0;
+bool         SnapshotValid=false;
+bool         LockedBuyAllowed=false;
+bool         LockedSellAllowed=false;
+datetime     SnapshotTime=0;
+long         SnapshotRangeKey=0;
+string       g_trend_label_name="HTF_TREND_STATUS";
 
 //--- function prototypes
 void   InitSessions();
@@ -205,6 +215,12 @@ bool   IsNewHTFCandle();
 bool   CheckSlopeExitSignalForPosition(ulong positionTicket,bool &shouldExit);
 void   ExecuteSlopeExitForPosition(ulong positionTicket);
 void   ProcessSlopeExitOnNewHTFCandle();
+long   BuildRangeKey(datetime startTime,datetime endTime,int index);
+void   ResetTrendSnapshot(long rangeKey);
+bool   TakeTrendSnapshot(long rangeKey);
+bool   GetHTFPermissionsForRange(long rangeKey,bool &buyAllowed,bool &sellAllowed);
+void   CreateTrendLabel();
+void   UpdateTrendLabel();
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                           |
@@ -216,6 +232,8 @@ int OnInit()
    lastBarTime=0;
    if(!InitializeHTFEMAHandles())
       return(INIT_FAILED);
+   if(ShowTrendLabel)
+      CreateTrendLabel();
    return(INIT_SUCCEEDED);
   }
 
@@ -228,6 +246,8 @@ void OnDeinit(const int reason)
      {
       if(ObjectFind(0,sessions[i].obj_name)>=0) ObjectDelete(0,sessions[i].obj_name);
      }
+   if(ObjectFind(0,g_trend_label_name)>=0)
+      ObjectDelete(0,g_trend_label_name);
   }
 
 //+------------------------------------------------------------------+
@@ -310,6 +330,8 @@ void ResetDay()
   {
    for(int i=0;i<3;i++)
       ResetSessionBox(i);
+   if(UseHTF_EMA_Filter && UseTrendSnapshot)
+      ResetTrendSnapshot(0);
   }
 
 //+------------------------------------------------------------------+
@@ -321,11 +343,14 @@ void UpdateSessions()
       if(!sessions[i].enabled) continue;
       datetime st=StructToTime(tm) - tm.hour*3600 - tm.min*60 - tm.sec + sessions[i].start_hour*3600 + sessions[i].start_min*60;
       datetime en=StructToTime(tm) - tm.hour*3600 - tm.min*60 - tm.sec + sessions[i].end_hour*3600 + sessions[i].end_min*60;
+      long rangeKey=BuildRangeKey(st,en,i);
       if(TimeCurrent()<st) { ResetSessionBox(i); continue; }
       if(TimeCurrent()>=st && TimeCurrent()<=en)
         {
          if(!sessions[i].box_ready)
            {
+            if(UseHTF_EMA_Filter && UseTrendSnapshot && SnapshotRangeKey!=rangeKey)
+               ResetTrendSnapshot(rangeKey);
             double barHigh=iHigh(_Symbol,PERIOD_CURRENT,0);
             double barLow=iLow(_Symbol,PERIOD_CURRENT,0);
             if(sessions[i].high==0 || barHigh>sessions[i].high) sessions[i].high=barHigh;
@@ -339,6 +364,11 @@ void UpdateSessions()
         {
          sessions[i].box_ready=true;
          DrawSessionBox(i);
+         if(UseHTF_EMA_Filter && UseTrendSnapshot)
+           {
+            if(!SnapshotValid || SnapshotRangeKey!=rangeKey)
+               TakeTrendSnapshot(rangeKey);
+           }
         }
      }
   }
@@ -434,6 +464,140 @@ bool GetHTFTrendPermissions(bool &buyAllowed,bool &sellAllowed)
       sellAllowed=false;
      }
    return true;
+  }
+
+//+------------------------------------------------------------------+
+long BuildRangeKey(datetime startTime,datetime endTime,int index)
+  {
+   long key=((long)startTime<<32) ^ (long)endTime ^ (long)index;
+   return key;
+  }
+
+//+------------------------------------------------------------------+
+void ResetTrendSnapshot(long rangeKey)
+  {
+   SnapshotValid=false;
+   LockedBuyAllowed=false;
+   LockedSellAllowed=false;
+   SnapshotTime=0;
+   SnapshotRangeKey=rangeKey;
+   UpdateTrendLabel();
+  }
+
+//+------------------------------------------------------------------+
+bool TakeTrendSnapshot(long rangeKey)
+  {
+   if(!UseHTF_EMA_Filter || !UseTrendSnapshot)
+      return false;
+   if(g_htf_ema_fast_handle==INVALID_HANDLE || g_htf_ema_slow_handle==INVALID_HANDLE)
+     {
+      Print("HTF EMA handles invalid, snapshot not taken");
+      return false;
+     }
+   double emaFast[];
+   double emaSlow[];
+   ArraySetAsSeries(emaFast,true);
+   ArraySetAsSeries(emaSlow,true);
+   if(CopyBuffer(g_htf_ema_fast_handle,0,HTF_Shift,1,emaFast)<1)
+     {
+      Print("Failed to read HTF fast EMA for snapshot");
+      SnapshotValid=false;
+      return false;
+     }
+   if(CopyBuffer(g_htf_ema_slow_handle,0,HTF_Shift,1,emaSlow)<1)
+     {
+      Print("Failed to read HTF slow EMA for snapshot");
+      SnapshotValid=false;
+      return false;
+     }
+   if(emaFast[0]>emaSlow[0])
+     {
+      LockedBuyAllowed=true;
+      LockedSellAllowed=false;
+     }
+   else if(emaFast[0]<emaSlow[0])
+     {
+      LockedBuyAllowed=false;
+      LockedSellAllowed=true;
+     }
+   else
+     {
+      LockedBuyAllowed=false;
+      LockedSellAllowed=false;
+     }
+   SnapshotValid=true;
+   SnapshotTime=TimeCurrent();
+   SnapshotRangeKey=rangeKey;
+   UpdateTrendLabel();
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+bool GetHTFPermissionsForRange(long rangeKey,bool &buyAllowed,bool &sellAllowed)
+  {
+   buyAllowed=true;
+   sellAllowed=true;
+   if(!UseHTF_EMA_Filter)
+      return true;
+   if(UseTrendSnapshot)
+     {
+      if(!SnapshotValid || SnapshotRangeKey!=rangeKey)
+        {
+         buyAllowed=false;
+         sellAllowed=false;
+         return true;
+        }
+      buyAllowed=LockedBuyAllowed;
+      sellAllowed=LockedSellAllowed;
+      return true;
+     }
+   return GetHTFTrendPermissions(buyAllowed,sellAllowed);
+  }
+
+//+------------------------------------------------------------------+
+void CreateTrendLabel()
+  {
+   if(ObjectFind(0,g_trend_label_name)<0)
+     {
+      ObjectCreate(0,g_trend_label_name,OBJ_LABEL,0,0,0);
+      ObjectSetInteger(0,g_trend_label_name,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+      ObjectSetInteger(0,g_trend_label_name,OBJPROP_XDISTANCE,10);
+      ObjectSetInteger(0,g_trend_label_name,OBJPROP_YDISTANCE,20);
+      ObjectSetInteger(0,g_trend_label_name,OBJPROP_FONTSIZE,10);
+      ObjectSetString(0,g_trend_label_name,OBJPROP_FONT,"Arial");
+     }
+   UpdateTrendLabel();
+  }
+
+//+------------------------------------------------------------------+
+void UpdateTrendLabel()
+  {
+   if(!ShowTrendLabel)
+      return;
+   if(ObjectFind(0,g_trend_label_name)<0)
+      return;
+   string text="HTF Trend: NOT SET YET";
+   color labelColor=clrGray;
+   if(SnapshotValid)
+     {
+      if(LockedBuyAllowed && !LockedSellAllowed)
+        {
+         text="HTF Trend: BULLISH \x2013 ONLY BUY";
+         labelColor=clrLime;
+        }
+      else if(!LockedBuyAllowed && LockedSellAllowed)
+        {
+         text="HTF Trend: BEARISH \x2013 ONLY SELL";
+         labelColor=clrRed;
+        }
+      else
+        {
+         text="HTF Trend: NEUTRAL \x2013 NO TRADES";
+         labelColor=clrSilver;
+        }
+     }
+   ObjectSetString(0,g_trend_label_name,OBJPROP_TEXT,text);
+   ObjectSetInteger(0,g_trend_label_name,OBJPROP_COLOR,labelColor);
   }
 
 //+------------------------------------------------------------------+
@@ -554,12 +718,13 @@ void ProcessSlopeExitOnNewHTFCandle()
 //+------------------------------------------------------------------+
 void CheckBreakouts()
   {
-   bool permissionsChecked=false;
-   bool buyAllowed=true;
-   bool sellAllowed=true;
    for(int i=0;i<3;i++)
      {
       if(!sessions[i].enabled || !sessions[i].box_ready) continue;
+      bool permissionsChecked=false;
+      bool buyAllowed=true;
+      bool sellAllowed=true;
+      long rangeKey=BuildRangeKey(sessions[i].start_time,sessions[i].end_time,i);
       double high=sessions[i].high; double low=sessions[i].low;
       if(LimitBoxRange && (high-low)/PIP()>MaxBoxPips) continue; // skip large boxes
       double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
@@ -568,11 +733,11 @@ void CheckBreakouts()
       // direct breakout
       if(UseDirectBreakout && TimeFilter(DirectStartTime,DirectEndTime))
         {
-         if(!sessions[i].buy_done && ask>high)
+            if(!sessions[i].buy_done && ask>high)
            {
             if(!permissionsChecked)
               {
-               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+               if(!GetHTFPermissionsForRange(rangeKey,buyAllowed,sellAllowed))
                   return;
                permissionsChecked=true;
               }
@@ -583,11 +748,11 @@ void CheckBreakouts()
             PlaceOrder(true,sl,tp1,tp2,tp3);
             sessions[i].buy_done=true;
            }
-         if(!sessions[i].sell_done && bid<low)
+            if(!sessions[i].sell_done && bid<low)
            {
             if(!permissionsChecked)
               {
-               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+               if(!GetHTFPermissionsForRange(rangeKey,buyAllowed,sellAllowed))
                   return;
                permissionsChecked=true;
               }
@@ -616,7 +781,7 @@ void CheckBreakouts()
            {
             if(!permissionsChecked)
               {
-               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+               if(!GetHTFPermissionsForRange(rangeKey,buyAllowed,sellAllowed))
                   return;
                permissionsChecked=true;
               }
@@ -630,7 +795,7 @@ void CheckBreakouts()
            {
             if(!permissionsChecked)
               {
-               if(!GetHTFTrendPermissions(buyAllowed,sellAllowed))
+               if(!GetHTFPermissionsForRange(rangeKey,buyAllowed,sellAllowed))
                   return;
                permissionsChecked=true;
               }
@@ -992,3 +1157,9 @@ void DailyClosures()
   }
 
 //+------------------------------------------------------------------+
+
+// Integration Notes
+// - Snapshot trigger: UpdateSessions() when session range ends (TimeCurrent()>end_time) and box_ready becomes true.
+// - Entry gating: CheckBreakouts() uses GetHTFPermissionsForRange() before placing BUY/SELL.
+// - Snapshot reset: UpdateSessions() when a new range starts (between session start/end) via ResetTrendSnapshot().
+// - Label updates: UpdateTrendLabel() called on snapshot reset/take and created in OnInit().
