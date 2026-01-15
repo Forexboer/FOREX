@@ -156,10 +156,10 @@ input double      RoundTPToPips        =10;
 struct Session
   {
    bool      enabled;
-   int       start_hour;
-   int       start_min;
-   int       end_hour;
-   int       end_min;
+   long      start_hour;
+   long      start_min;
+   long      end_hour;
+   long      end_min;
    double    high;
    double    low;
    bool      box_ready;
@@ -255,8 +255,8 @@ void OnTick()
       MqlDateTime tm; TimeToStruct(TimeCurrent(),tm);
       if(tm.day_of_week==5)
         {
-         int hour=StringToInteger(StringSubstr(InpFridayCloseTime,0,2));
-         int min=StringToInteger(StringSubstr(InpFridayCloseTime,3,2));
+         long hour=StringToInteger(StringSubstr(InpFridayCloseTime,0,2));
+         long min=StringToInteger(StringSubstr(InpFridayCloseTime,3,2));
          datetime close_time=StructToTime(tm); close_time=close_time - tm.hour*3600 - tm.min*60 + hour*3600 + min*60;
          if(TimeCurrent()>=close_time)
            {
@@ -355,10 +355,10 @@ bool IsTradingDay()
 //+------------------------------------------------------------------+
 bool TimeFilter(string start,string end)
   {
-   int sh=StringToInteger(StringSubstr(start,0,2));
-   int sm=StringToInteger(StringSubstr(start,3,2));
-   int eh=StringToInteger(StringSubstr(end,0,2));
-   int em=StringToInteger(StringSubstr(end,3,2));
+   long sh=StringToInteger(StringSubstr(start,0,2));
+   long sm=StringToInteger(StringSubstr(start,3,2));
+   long eh=StringToInteger(StringSubstr(end,0,2));
+   long em=StringToInteger(StringSubstr(end,3,2));
    MqlDateTime tm; TimeToStruct(TimeCurrent(),tm);
    datetime st=StructToTime(tm) - tm.hour*3600 - tm.min*60 - tm.sec + sh*3600 + sm*60;
    datetime en=StructToTime(tm) - tm.hour*3600 - tm.min*60 - tm.sec + eh*3600 + em*60;
@@ -460,7 +460,8 @@ bool CheckSlopeExitSignalForPosition(ulong positionTicket,bool &shouldExit)
       return false;
    if(!PositionSelectByTicket(positionTicket))
       return false;
-   bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
+   ENUM_POSITION_TYPE position_type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   bool isBuy=position_type==POSITION_TYPE_BUY;
    int lookback=Slope_Lookback_Bars;
    if(lookback<1)
       lookback=1;
@@ -787,7 +788,8 @@ void ManagePositions()
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
       double volume=PositionGetDouble(POSITION_VOLUME);
-      bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
+      ENUM_POSITION_TYPE position_type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool isBuy=position_type==POSITION_TYPE_BUY;
 
       // handle partial TPs
       double tp_levels[3]={0,0,0};
@@ -861,7 +863,8 @@ void ApplyBreakeven()
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
       double sl=PositionGetDouble(POSITION_SL);
       double entry=PositionGetDouble(POSITION_PRICE_OPEN);
-      bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
+      ENUM_POSITION_TYPE position_type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool isBuy=position_type==POSITION_TYPE_BUY;
       double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double price=isBuy? bid:ask;
@@ -917,7 +920,8 @@ void ApplyTrailing()
       if(ticket==0) continue;
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
-      bool isBuy=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY;
+      ENUM_POSITION_TYPE position_type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool isBuy=position_type==POSITION_TYPE_BUY;
       double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
       double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
       double price=isBuy? bid:ask;
@@ -958,7 +962,7 @@ void TimeExits()
       if(ticket==0) continue;
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) continue;
-      datetime open=PositionGetInteger(POSITION_TIME);
+      datetime open=(datetime)PositionGetInteger(POSITION_TIME);
       if(TimeCurrent()-open>=ExitAfterMinutes*60)
         trade.PositionClose(ticket);
      }
@@ -971,8 +975,8 @@ void DailyClosures()
    bool enable[7]={false,DailyCloseMon,DailyCloseTue,DailyCloseWed,DailyCloseThu,DailyCloseFri,false};
    string times[7]={"00:00",DailyCloseMonTime,DailyCloseTueTime,DailyCloseWedTime,DailyCloseThuTime,DailyCloseFriTime,"00:00"};
    if(!enable[tm.day_of_week]) return;
-   int h=StringToInteger(StringSubstr(times[tm.day_of_week],0,2));
-   int m=StringToInteger(StringSubstr(times[tm.day_of_week],3,2));
+   long h=StringToInteger(StringSubstr(times[tm.day_of_week],0,2));
+   long m=StringToInteger(StringSubstr(times[tm.day_of_week],3,2));
    datetime close_time=StructToTime(tm) - tm.hour*3600 - tm.min*60 - tm.sec + h*3600 + m*60;
    if(TimeCurrent()>=close_time)
      {
