@@ -67,8 +67,15 @@ input ENUM_TIMEFRAMES    TrailingTimeframe       = PERIOD_CURRENT;              
 input double             StepPips                = 10.0;                         // step distance in pips for STEP_PIPS mode
 input double             OffsetPips              = 2.0;                          // additional buffer in pips for candle mode
 input double             ATRExt                  = 1.0;                          // ATR multiplier when ATR mode is active
-input bool               UseMaxTradeMinutes      = true;                        // NEW
-input int                MaxTradeMinutes         = 90;                          // NEW
+input bool               TrailingStop_Enabled    = true;
+input bool               LockProfit_Enabled      = true;
+input double             LockProfit_TriggerPips  = 12.0;
+input double             LockProfit_LockPips     = 12.0;
+input bool               LockProfit_UseBEPlus    = true;
+input bool               TrailingAfterLock_Only  = true;
+input double             TrailingDistancePips    = 10.0;
+input bool               TimeStop_Enabled        = true;
+input int                TimeStop_MaxMinutes     = 90;
 
 input color             ChartBackgroundColor     = clrWhite;
 input color             ChartForegroundColor     = clrBlack;
@@ -108,7 +115,7 @@ int                     g_tradingEndMinutes   = -1;
 
 int                     g_atrHandle           = INVALID_HANDLE;
 
-const string            NEWS_URL               = "http://nfs.faireconomy.media/ff_calendar_thisweek.xml";
+const string            ECON_CALENDAR_URL      = "http://nfs.faireconomy.media/ff_calendar_thisweek.xml";
 
 //--- helper forward declarations
 void   ApplyChartStyle();
@@ -141,7 +148,8 @@ string Trim(const string text);
 string NormalizeSymbol(const string symbol);
 void   Log(const string message);
 void   ApplyTrailingStops();
-void   ApplyTimeStop(); // NEW
+void   ApplyLockProfitAndTrailing();
+void   ApplyTimeBasedExit();
 
 //--- initialization
 int OnInit()
@@ -184,19 +192,20 @@ void OnTick()
 
    if(!CheckTradingWindow())
      {
-      ApplyTimeStop(); // NEW
+      ApplyTimeBasedExit();
       return;
      }
 
    if(NewsFilterEnabled && ShouldBlockForNews())
      {
-      ApplyTimeStop(); // NEW
+      ApplyTimeBasedExit();
       return;
      }
 
    CheckBreakouts();
-   ApplyTrailingStops();
-   ApplyTimeStop(); // NEW
+   if(TrailingStop_Enabled || LockProfit_Enabled)
+      ApplyLockProfitAndTrailing();
+   ApplyTimeBasedExit();
   }
 
 void ApplyChartStyle()
@@ -647,6 +656,154 @@ void ApplyTrailingStops()
      }
   }
 
+void ApplyLockProfitAndTrailing()
+  {
+   if(!TrailingStop_Enabled)
+      return;
+
+   if(!LockProfit_Enabled && TrailingDistancePips <= 0.0)
+      return;
+
+   double pipSize = GetPipSize();
+   if(pipSize <= 0.0)
+      return;
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+
+   int    stopLevelPoints   = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int    freezeLevelPoints = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double stopDistance      = stopLevelPoints * point;
+   double freezeDistance    = freezeLevelPoints * point;
+
+   for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
+     {
+      ulong posTicket = PositionGetTicket(positionIndex);
+      if(!PositionSelectByTicket(posTicket))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(symbol != _Symbol)
+         continue;
+
+      long magic = (long)PositionGetInteger(POSITION_MAGIC);
+      if(magic != MagicNumber)
+         continue;
+
+      ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool isBuy  = (type == POSITION_TYPE_BUY);
+      bool isSell = (type == POSITION_TYPE_SELL);
+      if(!isBuy && !isSell)
+         continue;
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double oldSL = PositionGetDouble(POSITION_SL);
+      double tp    = PositionGetDouble(POSITION_TP);
+
+      double profitPips = 0.0;
+      if(isBuy)
+         profitPips = (bid - openPrice) / pipSize;
+      else
+         profitPips = (openPrice - ask) / pipSize;
+
+      double lockOffsetPips = (LockProfit_UseBEPlus ? LockProfit_LockPips : 0.0);
+      double lockThreshold = isBuy
+                             ? openPrice + lockOffsetPips * pipSize
+                             : openPrice - lockOffsetPips * pipSize;
+
+      bool lockActive = false;
+      if(LockProfit_Enabled && oldSL > 0.0)
+        {
+         if(isBuy)
+            lockActive = (oldSL >= lockThreshold);
+         else
+            lockActive = (oldSL <= lockThreshold);
+        }
+
+      if(LockProfit_Enabled && LockProfit_TriggerPips > 0.0 && profitPips >= LockProfit_TriggerPips)
+        {
+         double desiredSL = isBuy
+                            ? openPrice + LockProfit_LockPips * pipSize
+                            : openPrice - LockProfit_LockPips * pipSize;
+
+         desiredSL = NormalizeDouble(desiredSL, digits);
+
+         bool improve = false;
+         if(isBuy)
+            improve = (desiredSL > oldSL);
+         else
+            improve = (oldSL == 0.0 || desiredSL < oldSL);
+
+         double distanceToPrice = isBuy ? (bid - desiredSL) : (desiredSL - ask);
+         bool respectsStops = true;
+         if(stopDistance > 0.0 && distanceToPrice < stopDistance)
+            respectsStops = false;
+         if(freezeDistance > 0.0 && distanceToPrice < freezeDistance)
+            respectsStops = false;
+
+         if(desiredSL > 0.0 && improve && respectsStops)
+           {
+            ResetLastError();
+            if(trade.PositionModify(symbol, desiredSL, tp))
+              {
+               oldSL = desiredSL;
+               lockActive = true;
+              }
+            else
+              {
+               int error = GetLastError();
+               PrintFormat("Lock profit update failed for %s (%s). Error=%d. %s",
+                           symbol,
+                           isBuy ? "BUY" : "SELL",
+                           error,
+                           trade.ResultRetcodeDescription());
+              }
+           }
+        }
+
+      if(TrailingDistancePips <= 0.0)
+         continue;
+
+      if(TrailingAfterLock_Only && !lockActive)
+         continue;
+
+      double desiredTrailSL = isBuy
+                              ? bid - TrailingDistancePips * pipSize
+                              : ask + TrailingDistancePips * pipSize;
+
+      desiredTrailSL = NormalizeDouble(desiredTrailSL, digits);
+
+      bool trailImprove = false;
+      if(isBuy)
+         trailImprove = (desiredTrailSL > oldSL);
+      else
+         trailImprove = (oldSL == 0.0 || desiredTrailSL < oldSL);
+
+      double trailDistanceToPrice = isBuy ? (bid - desiredTrailSL) : (desiredTrailSL - ask);
+      bool trailRespectsStops = true;
+      if(stopDistance > 0.0 && trailDistanceToPrice < stopDistance)
+         trailRespectsStops = false;
+      if(freezeDistance > 0.0 && trailDistanceToPrice < freezeDistance)
+         trailRespectsStops = false;
+
+      if(desiredTrailSL <= 0.0 || !trailImprove || !trailRespectsStops)
+         continue;
+
+      ResetLastError();
+      if(!trade.PositionModify(symbol, desiredTrailSL, tp))
+        {
+         int error = GetLastError();
+         PrintFormat("Trailing stop update failed for %s (%s). Error=%d. %s",
+                     symbol,
+                     isBuy ? "BUY" : "SELL",
+                     error,
+                     trade.ResultRetcodeDescription());
+        }
+     }
+  }
+
 bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &flag)
   {
    MqlTick tick;
@@ -840,7 +997,7 @@ void DownloadNews(bool force)
    ArrayResize(requestBody, 0);
 
    ResetLastError();
-   int status = WebRequest("GET", NEWS_URL, "", 5000, requestBody, response, headers);
+   int status = WebRequest("GET", ECON_CALENDAR_URL, "", 5000, requestBody, response, headers);
    if(status != 200)
      {
       int error = GetLastError();
@@ -998,9 +1155,9 @@ void Log(const string message)
    Print(TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), " ", message);
   }
 
-void ApplyTimeStop() // NEW
+void ApplyTimeBasedExit()
   {
-   if(!UseMaxTradeMinutes || MaxTradeMinutes <= 0) // NEW
+   if(!TimeStop_Enabled || TimeStop_MaxMinutes <= 0)
       return;
 
    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
@@ -1022,12 +1179,12 @@ void ApplyTimeStop() // NEW
          continue;
 
       int minutesInTrade = (int)((TimeCurrent() - openTime) / 60);
-      if(minutesInTrade < MaxTradeMinutes)
+      if(minutesInTrade < TimeStop_MaxMinutes)
          continue;
 
-      if(trade.PositionClose(_Symbol))
-         Log(StringFormat("TimeStop closed %s after %d minutes", _Symbol, minutesInTrade));
+      if(trade.PositionClose(posTicket))
+         Log(StringFormat("Time-based exit closed %s after %d minutes", _Symbol, minutesInTrade));
       else
-         Log(StringFormat("TimeStop failed to close %s after %d minutes. %s", _Symbol, minutesInTrade, trade.ResultRetcodeDescription()));
+         Log(StringFormat("Time-based exit failed to close %s after %d minutes. %s", _Symbol, minutesInTrade, trade.ResultRetcodeDescription()));
      }
   }
