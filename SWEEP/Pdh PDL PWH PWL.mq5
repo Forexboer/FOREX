@@ -67,6 +67,8 @@ input ENUM_TIMEFRAMES    TrailingTimeframe       = PERIOD_CURRENT;              
 input double             StepPips                = 10.0;                         // step distance in pips for STEP_PIPS mode
 input double             OffsetPips              = 2.0;                          // additional buffer in pips for candle mode
 input double             ATRExt                  = 1.0;                          // ATR multiplier when ATR mode is active
+input bool               UseMaxTradeMinutes      = true;                        // NEW
+input int                MaxTradeMinutes         = 90;                          // NEW
 
 input color             ChartBackgroundColor     = clrWhite;
 input color             ChartForegroundColor     = clrBlack;
@@ -139,6 +141,7 @@ string Trim(const string text);
 string NormalizeSymbol(const string symbol);
 void   Log(const string message);
 void   ApplyTrailingStops();
+void   ApplyTimeStop(); // NEW
 
 //--- initialization
 int OnInit()
@@ -180,13 +183,20 @@ void OnTick()
    RefreshLevels(false, false);
 
    if(!CheckTradingWindow())
+     {
+      ApplyTimeStop(); // NEW
       return;
+     }
 
    if(NewsFilterEnabled && ShouldBlockForNews())
+     {
+      ApplyTimeStop(); // NEW
       return;
+     }
 
    CheckBreakouts();
    ApplyTrailingStops();
+   ApplyTimeStop(); // NEW
   }
 
 void ApplyChartStyle()
@@ -472,8 +482,8 @@ void ApplyTrailingStops()
 
    double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double stepDistance   = StepPips * point;
-   double offsetDistance = OffsetPips * point;
+   double stepDistance   = StepPips * GetPipSize(); // FIX
+   double offsetDistance = OffsetPips * GetPipSize(); // FIX
 
    double prevLow  = 0.0;
    double prevHigh = 0.0;
@@ -540,16 +550,25 @@ void ApplyTrailingStops()
       double oldSL = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
       double newSL = oldSL;
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN); // FIX
 
       switch(TrailingMode)
         {
          case TRAILING_MODE_STEP_PIPS:
-            if(stepDistance <= 0.0 || oldSL == 0.0)
+            if(stepDistance <= 0.0)
                continue;
             if(isBuy)
-               newSL = oldSL + stepDistance;
+              {
+               if(bid <= openPrice) // FIX
+                  continue;
+               newSL = bid - stepDistance; // FIX
+              }
             else
-               newSL = oldSL - stepDistance;
+              {
+               if(ask >= openPrice) // FIX
+                  continue;
+               newSL = ask + stepDistance; // FIX
+              }
             break;
 
          case TRAILING_MODE_PREV_CANDLE_HL:
@@ -576,18 +595,18 @@ void ApplyTrailingStops()
       if(stopDistance > 0)
         {
          if(isBuy)
-            newSL = MathMin(newSL, ask - stopDistance);
+            newSL = MathMin(newSL, bid - stopDistance); // FIX
          else
-            newSL = MathMax(newSL, ask + stopDistance);
+            newSL = MathMax(newSL, ask + stopDistance); // FIX
         }
 
       // freeze-level check prevents submitting an update too close to current price
       if(freezeDistance > 0)
         {
          if(isBuy)
-            newSL = MathMin(newSL, bid - freezeDistance);
+            newSL = MathMin(newSL, bid - freezeDistance); // FIX
          else
-            newSL = MathMax(newSL, ask + freezeDistance);
+            newSL = MathMax(newSL, ask + freezeDistance); // FIX
         }
 
       if(tp > 0)
@@ -694,7 +713,7 @@ double CalculateStopDistance()
       return(FixedSLPips * GetPipSize());
 
    double atrBuffer[];
-   if(CopyBuffer(g_atrHandle, 0, 0, 1, atrBuffer) != 1)
+   if(CopyBuffer(g_atrHandle, 0, 1, 1, atrBuffer) != 1) // FIX
       return(0.0);
 
    double atrValue = atrBuffer[0];
@@ -977,4 +996,38 @@ bool MatchesSymbolCurrencies(const string symbol, const string eventCurrency)
 void Log(const string message)
   {
    Print(TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), " ", message);
+  }
+
+void ApplyTimeStop() // NEW
+  {
+   if(!UseMaxTradeMinutes || MaxTradeMinutes <= 0) // NEW
+      return;
+
+   for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
+     {
+      ulong posTicket = PositionGetTicket(positionIndex);
+      if(!PositionSelectByTicket(posTicket))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(symbol != _Symbol)
+         continue;
+
+      long magic = (long)PositionGetInteger(POSITION_MAGIC);
+      if(magic != MagicNumber)
+         continue;
+
+      datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+      if(openTime <= 0)
+         continue;
+
+      int minutesInTrade = (int)((TimeCurrent() - openTime) / 60);
+      if(minutesInTrade < MaxTradeMinutes)
+         continue;
+
+      if(trade.PositionClose(_Symbol))
+         Log(StringFormat("TimeStop closed %s after %d minutes", _Symbol, minutesInTrade));
+      else
+         Log(StringFormat("TimeStop failed to close %s after %d minutes. %s", _Symbol, minutesInTrade, trade.ResultRetcodeDescription()));
+     }
   }
