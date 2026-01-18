@@ -38,7 +38,10 @@ struct NewsEvent
   };
 
 input int               MagicNumber              = 20241013;
-input double            RiskPercentPerTrade      = 1.0;
+input bool              InpEnableEA              = true;
+input bool              InpUseRiskPercent        = true;
+input double            InpRiskPercentPerTrade   = 1.0;         // percent of equity if risk sizing enabled
+input double            InpFixedLot              = 0.10;        // used only when InpUseRiskPercent == false
 input ENUM_ENTRY_MODE   EntryMode                = ENTRY_ON_BREAK_TOUCH;
 input ENUM_SL_MODE      SLMode                   = SL_MODE_ATR;
 input ENUM_TP_MODE      TPMode                   = TP_MODE_RR;
@@ -46,6 +49,17 @@ input double            RiskReward               = 1.5;
 input bool              IncludeCommissionsInRisk = true;
 input double            CommissionPerLot         = 0.0;
 input string            TradingHours             = "07:00-22:00";
+input bool              InpUseSpreadFilter       = true;
+input double            InpMaxSpreadPoints       = 60;
+input bool              InpUseRolloverBlock      = true;
+input string            InpRolloverBlockHours    = "23:50-00:10";
+input bool              InpUseWaitAfterNewD1     = false;
+input int               InpWaitAfterNewD1Seconds = 120;
+input bool              InpUseGapFilter          = false;
+input double            InpMaxGapPoints          = 200;
+input bool              InpSkipDayOnGap          = true;
+input bool              InpUseSlippageControl    = true;
+input int               InpSlippagePoints        = 30;
 
 input bool              ShowPDH                  = true;
 input bool              ShowPDL                  = true;
@@ -76,6 +90,8 @@ input bool               TrailingAfterLock_Only  = true;
 input double             TrailingDistancePips    = 10.0;
 input bool               TimeStop_Enabled        = true;
 input int                TimeStop_MaxMinutes     = 90;
+input bool               InpUseHoldAfterEntry    = false;
+input int                InpHoldSecondsAfterEntry = 30;
 
 input color             ChartBackgroundColor     = clrWhite;
 input color             ChartForegroundColor     = clrBlack;
@@ -106,12 +122,16 @@ bool                    g_PWLTradeExecuted = false;
 
 datetime                g_lastDailyReference = 0;
 datetime                g_lastWeeklyReference = 0;
+datetime                g_lastD1OpenTime = 0;
+bool                    g_skipTodayEntries = false;
 
 datetime                g_lastBarSignalTime[4];
 datetime                g_lastTrailingBarTime  = 0;
 
 int                     g_tradingStartMinutes = -1;
 int                     g_tradingEndMinutes   = -1;
+int                     g_rolloverStartMinutes = -1;
+int                     g_rolloverEndMinutes   = -1;
 
 int                     g_atrHandle           = INVALID_HANDLE;
 
@@ -120,7 +140,9 @@ const string            ECON_CALENDAR_URL      = "http://nfs.faireconomy.media/f
 //--- helper forward declarations
 void   ApplyChartStyle();
 void   UpdateTradingHours();
+void   UpdateRolloverHours();
 bool   ParseTradingHours(const string hours, int &startMinutes, int &endMinutes);
+bool   IsMinutesInWindow(const int minutes, const int startMinutes, const int endMinutes);
 void   RefreshLevels(bool forceDaily, bool forceWeekly);
 void   UpdateDailyLevels();
 void   UpdateWeeklyLevels();
@@ -132,6 +154,8 @@ void   DeleteLevelObjects();
 void   CheckBreakouts();
 bool   CheckTradingWindow();
 bool   ShouldBlockForNews();
+void   UpdateDailyEntryControls(bool force);
+bool   ShouldBlockNewEntries();
 bool   ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &flag);
 double CalculateStopDistance();
 double CalculateTakeProfitDistance(double stopDistance);
@@ -158,8 +182,10 @@ int OnInit()
    trade.SetDeviationInPoints(10);
    ApplyChartStyle();
    UpdateTradingHours();
+   UpdateRolloverHours();
    ArrayInitialize(g_lastBarSignalTime, (datetime)0);
    RefreshLevels(true, true);
+   UpdateDailyEntryControls(true);
 
    g_atrHandle = iATR(_Symbol, ATRTimeframe, ATRPeriod);
    if(g_atrHandle == INVALID_HANDLE)
@@ -189,23 +215,13 @@ void OnTimer()
 void OnTick()
   {
    RefreshLevels(false, false);
+   UpdateDailyEntryControls(false);
 
-   if(!CheckTradingWindow())
-     {
-      ApplyTimeBasedExit();
-      return;
-     }
-
-   if(NewsFilterEnabled && ShouldBlockForNews())
-     {
-      ApplyTimeBasedExit();
-      return;
-     }
-
-   CheckBreakouts();
    if(TrailingStop_Enabled || LockProfit_Enabled)
       ApplyLockProfitAndTrailing();
    ApplyTimeBasedExit();
+   if(!ShouldBlockNewEntries())
+      CheckBreakouts();
   }
 
 void ApplyChartStyle()
@@ -226,6 +242,16 @@ void UpdateTradingHours()
       g_tradingStartMinutes = 0;
       g_tradingEndMinutes   = 24 * 60 - 1;
       Print("TradingHours input invalid, defaulting to 24h trading");
+     }
+  }
+
+void UpdateRolloverHours()
+  {
+   if(!ParseTradingHours(InpRolloverBlockHours, g_rolloverStartMinutes, g_rolloverEndMinutes))
+     {
+      g_rolloverStartMinutes = -1;
+      g_rolloverEndMinutes   = -1;
+      Print("InpRolloverBlockHours input invalid, rollover block disabled");
      }
   }
 
@@ -252,6 +278,23 @@ bool ParseTradingHours(const string hours, int &startMinutes, int &endMinutes)
    startMinutes = startHour * 60 + startMin;
    endMinutes   = endHour * 60 + endMin;
    return(true);
+  }
+
+bool IsMinutesInWindow(const int minutes, const int startMinutes, const int endMinutes)
+  {
+   if(startMinutes < 0 || endMinutes < 0)
+      return(false);
+
+   if(startMinutes == endMinutes)
+      return(true);
+
+   if(startMinutes <= endMinutes)
+      return(minutes >= startMinutes && minutes <= endMinutes);
+
+   if(minutes >= startMinutes || minutes <= endMinutes)
+      return(true);
+
+   return(false);
   }
 
 void RefreshLevels(bool forceDaily, bool forceWeekly)
@@ -365,20 +408,9 @@ int MinutesFromDatetime(const datetime value)
 
 bool CheckTradingWindow()
   {
-   if(g_tradingStartMinutes == g_tradingEndMinutes)
-      return(true);
-
    datetime current_time = TimeCurrent();
    int minutes  = MinutesFromDatetime(current_time);
-
-   if(g_tradingStartMinutes <= g_tradingEndMinutes)
-      return(minutes >= g_tradingStartMinutes && minutes <= g_tradingEndMinutes);
-
-   // Overnight window
-   if(minutes >= g_tradingStartMinutes || minutes <= g_tradingEndMinutes)
-      return(true);
-
-   return(false);
+   return(IsMinutesInWindow(minutes, g_tradingStartMinutes, g_tradingEndMinutes));
   }
 
 bool ShouldBlockForNews()
@@ -390,6 +422,73 @@ bool ShouldBlockForNews()
    if(block && LogNewsDecisions)
       Log("News filter active - trade blocked");
    return(block);
+  }
+
+void UpdateDailyEntryControls(bool force)
+  {
+   datetime currentD1Open = iTime(_Symbol, PERIOD_D1, 0);
+   if(currentD1Open == 0)
+      return;
+
+   if(!force && currentD1Open == g_lastD1OpenTime)
+      return;
+
+   g_lastD1OpenTime = currentD1Open;
+   g_skipTodayEntries = false;
+
+   if(!InpUseGapFilter)
+      return;
+
+   double todayOpen = iOpen(_Symbol, PERIOD_D1, 0);
+   double prevClose = iClose(_Symbol, PERIOD_D1, 1);
+   if(todayOpen <= 0.0 || prevClose <= 0.0)
+      return;
+
+   double gapPoints = MathAbs(todayOpen - prevClose) / _Point;
+   if(gapPoints > InpMaxGapPoints && InpSkipDayOnGap)
+      g_skipTodayEntries = true;
+  }
+
+bool ShouldBlockNewEntries()
+  {
+   if(!InpEnableEA)
+      return(true);
+
+   if(!CheckTradingWindow())
+      return(true);
+
+   if(NewsFilterEnabled && ShouldBlockForNews())
+      return(true);
+
+   if(InpUseSpreadFilter)
+     {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if(ask > 0.0 && bid > 0.0)
+        {
+         double spreadPoints = (ask - bid) / _Point;
+         if(spreadPoints > InpMaxSpreadPoints)
+            return(true);
+        }
+     }
+
+   if(InpUseRolloverBlock && g_rolloverStartMinutes >= 0 && g_rolloverEndMinutes >= 0)
+     {
+      int minutes = MinutesFromDatetime(TimeCurrent());
+      if(IsMinutesInWindow(minutes, g_rolloverStartMinutes, g_rolloverEndMinutes))
+         return(true);
+     }
+
+   if(InpUseWaitAfterNewD1 && g_lastD1OpenTime > 0)
+     {
+      if((TimeCurrent() - g_lastD1OpenTime) < InpWaitAfterNewD1Seconds)
+         return(true);
+     }
+
+   if(InpUseGapFilter && g_skipTodayEntries)
+      return(true);
+
+   return(false);
   }
 
 void CheckBreakouts()
@@ -698,6 +797,13 @@ void ApplyLockProfitAndTrailing()
       if(!isBuy && !isSell)
          continue;
 
+      if(InpUseHoldAfterEntry && InpHoldSecondsAfterEntry > 0)
+        {
+         datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+         if(openTime > 0 && (TimeCurrent() - openTime) < InpHoldSecondsAfterEntry)
+            continue;
+        }
+
       double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double oldSL = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
@@ -845,7 +951,10 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
    stopLossPrice   = NormalizeDouble(stopLossPrice, _Digits);
    takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
 
-   trade.SetDeviationInPoints((int)MathMax(3, MathCeil(spread / _Point)));
+   if(InpUseSlippageControl)
+      trade.SetDeviationInPoints((int)MathMax(0, InpSlippagePoints));
+   else
+      trade.SetDeviationInPoints((int)MathMax(3, MathCeil(spread / _Point)));
 
    bool result = false;
    if(isBuy)
@@ -893,10 +1002,34 @@ double CalculateVolume(double riskDistance)
    double maxLot    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double step      = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
+   if(!InpUseRiskPercent)
+     {
+      double volume = InpFixedLot;
+      if(step > 0)
+         volume = MathRound(volume / step) * step;
+      if(minLot > 0)
+         volume = MathMax(volume, minLot);
+      if(maxLot > 0)
+         volume = MathMin(volume, maxLot);
+
+      int precision = 2;
+      if(step > 0)
+        {
+         double logValue = -MathLog10(step);
+         if(MathIsValidNumber(logValue))
+           {
+            precision = (int)MathRound(logValue);
+            if(precision < 0)
+               precision = 2;
+           }
+        }
+      return(NormalizeDouble(volume, precision));
+     }
+
    if(tickValue <= 0 || tickSize <= 0)
       return(0.0);
 
-   double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * RiskPercentPerTrade / 100.0;
+   double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * InpRiskPercentPerTrade / 100.0;
 
    double commissionPerLot = 0.0;
    static bool commissionWarningShown = false;
