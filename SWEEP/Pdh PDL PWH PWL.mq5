@@ -161,6 +161,7 @@ bool   ShouldBlockForNews();
 void   UpdateDailyEntryControls(bool force);
 bool   ShouldBlockNewEntries();
 bool   ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &flag);
+bool   ClampVolumeByMargin(bool isBuy, double requestedVolume, double price, double &clampedVolume, double &requiredMargin, double &freeMargin);
 double CalculateStopDistance();
 double CalculateTakeProfitDistance(double stopDistance);
 double CalculateVolume(double riskDistance);
@@ -178,6 +179,85 @@ void   Log(const string message);
 void   ApplyTrailingStops();
 void   ApplyLockProfitAndTrailing();
 void   ApplyTimeBasedExit();
+
+bool ClampVolumeByMargin(bool isBuy, double requestedVolume, double price, double &clampedVolume, double &requiredMargin, double &freeMargin)
+  {
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   clampedVolume = requestedVolume;
+
+   if(maxLot > 0)
+      clampedVolume = MathMin(clampedVolume, maxLot);
+
+   if(step > 0)
+      clampedVolume = MathFloor(clampedVolume / step + 0.0000001) * step;
+
+   if(minLot > 0 && clampedVolume < minLot)
+     {
+      freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+      requiredMargin = 0.0;
+      PrintFormat("Margin clamp: free=%.2f required=%.2f original=%.2f clamped=%.2f (below min lot)",
+                  freeMargin, requiredMargin, requestedVolume, clampedVolume);
+      return(false);
+     }
+
+   int precision = 2;
+   if(step > 0)
+     {
+      double logValue = -MathLog10(step);
+      if(MathIsValidNumber(logValue))
+        {
+         precision = (int)MathRound(logValue);
+         if(precision < 0)
+            precision = 2;
+        }
+     }
+   clampedVolume = NormalizeDouble(clampedVolume, precision);
+
+   freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcMargin(orderType, _Symbol, clampedVolume, price, requiredMargin))
+     {
+      int error = GetLastError();
+      PrintFormat("OrderCalcMargin failed (error=%d). free=%.2f original=%.2f clamped=%.2f",
+                  error, freeMargin, requestedVolume, clampedVolume);
+      return(false);
+     }
+
+   while(requiredMargin > freeMargin)
+     {
+      if(step <= 0)
+         break;
+
+      clampedVolume = MathFloor((clampedVolume - step) / step + 0.0000001) * step;
+      if(minLot > 0 && clampedVolume < minLot)
+         break;
+
+      clampedVolume = NormalizeDouble(clampedVolume, precision);
+
+      if(!OrderCalcMargin(orderType, _Symbol, clampedVolume, price, requiredMargin))
+        {
+         int error = GetLastError();
+         PrintFormat("OrderCalcMargin failed (error=%d). free=%.2f original=%.2f clamped=%.2f",
+                     error, freeMargin, requestedVolume, clampedVolume);
+         return(false);
+        }
+     }
+
+   PrintFormat("Margin clamp: free=%.2f required=%.2f original=%.2f clamped=%.2f",
+               freeMargin, requiredMargin, requestedVolume, clampedVolume);
+
+   if(requiredMargin > freeMargin)
+      return(false);
+   if(minLot > 0 && clampedVolume < minLot)
+      return(false);
+   if(clampedVolume <= 0.0)
+      return(false);
+
+   return(true);
+  }
 
 //--- initialization
 int OnInit()
@@ -969,6 +1049,19 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
       Print("Calculated volume invalid");
       return(false);
      }
+
+   double freeMargin     = 0.0;
+   double requiredMargin = 0.0;
+   double clampedVolume  = 0.0;
+   double marginPrice    = isBuy ? tick.ask : tick.bid;
+   if(!ClampVolumeByMargin(isBuy, volume, marginPrice, clampedVolume, requiredMargin, freeMargin))
+     {
+      PrintFormat("Trade skipped due to margin limits. free=%.2f required=%.2f original=%.2f clamped=%.2f",
+                  freeMargin, requiredMargin, volume, clampedVolume);
+      return(false);
+     }
+
+   volume = clampedVolume;
 
    double stopLossPrice   = isBuy ? entryPrice - stopDistance - spread : entryPrice + stopDistance + spread;
    double takeProfitPrice = isBuy ? entryPrice + tpDistance : entryPrice - tpDistance;
