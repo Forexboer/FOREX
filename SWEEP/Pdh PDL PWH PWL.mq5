@@ -65,6 +65,10 @@ input bool              ShowPDH                  = true;
 input bool              ShowPDL                  = true;
 input bool              ShowPWH                  = true;
 input bool              ShowPWL                  = true;
+input bool              TradePDH_Enabled         = true;
+input bool              TradePDL_Enabled         = true;
+input bool              TradePWH_Enabled         = true;
+input bool              TradePWL_Enabled         = true;
 
 input ENUM_TIMEFRAMES   ATRTimeframe             = PERIOD_H1;
 input int               ATRPeriod                = 14;
@@ -299,7 +303,7 @@ bool IsMinutesInWindow(const int minutes, const int startMinutes, const int endM
 
 void RefreshLevels(bool forceDaily, bool forceWeekly)
   {
-   datetime dailyRef = iTime(_Symbol, PERIOD_D1, 1);
+   datetime dailyRef = iTime(_Symbol, PERIOD_D1, 0);
    if(forceDaily || dailyRef != g_lastDailyReference)
      {
       g_lastDailyReference = dailyRef;
@@ -452,13 +456,22 @@ void UpdateDailyEntryControls(bool force)
 bool ShouldBlockNewEntries()
   {
    if(!InpEnableEA)
+     {
+      Log("Entries blocked: EA disabled");
       return(true);
+     }
 
    if(!CheckTradingWindow())
+     {
+      Log("Entries blocked: outside trading hours");
       return(true);
+     }
 
    if(NewsFilterEnabled && ShouldBlockForNews())
+     {
+      Log("Entries blocked: news filter active");
       return(true);
+     }
 
    if(InpUseSpreadFilter)
      {
@@ -468,7 +481,10 @@ bool ShouldBlockNewEntries()
         {
          double spreadPoints = (ask - bid) / _Point;
          if(spreadPoints > InpMaxSpreadPoints)
+           {
+            Log(StringFormat("Entries blocked: spread too high (%.2f > %.2f points)", spreadPoints, InpMaxSpreadPoints));
             return(true);
+           }
         }
      }
 
@@ -476,17 +492,26 @@ bool ShouldBlockNewEntries()
      {
       int minutes = MinutesFromDatetime(TimeCurrent());
       if(IsMinutesInWindow(minutes, g_rolloverStartMinutes, g_rolloverEndMinutes))
+        {
+         Log("Entries blocked: rollover block window");
          return(true);
+        }
      }
 
    if(InpUseWaitAfterNewD1 && g_lastD1OpenTime > 0)
      {
       if((TimeCurrent() - g_lastD1OpenTime) < InpWaitAfterNewD1Seconds)
+        {
+         Log("Entries blocked: wait-after-new-D1 active");
          return(true);
+        }
      }
 
    if(InpUseGapFilter && g_skipTodayEntries)
+     {
+      Log("Entries blocked: gap filter skip-day active");
       return(true);
+     }
 
    return(false);
   }
@@ -495,7 +520,7 @@ void CheckBreakouts()
   {
    double buffer = BufferPips * GetPipSize();
 
-   if(!g_PDHTradeExecuted)
+   if(TradePDH_Enabled && !g_PDHTradeExecuted)
      {
       if(EntryMode == ENTRY_ON_BREAK_TOUCH)
         {
@@ -514,7 +539,7 @@ void CheckBreakouts()
         }
      }
 
-   if(!g_PDLTradeExecuted)
+   if(TradePDL_Enabled && !g_PDLTradeExecuted)
      {
       if(EntryMode == ENTRY_ON_BREAK_TOUCH)
         {
@@ -533,7 +558,7 @@ void CheckBreakouts()
         }
      }
 
-   if(!g_PWHTradeExecuted)
+   if(TradePWH_Enabled && !g_PWHTradeExecuted)
      {
       if(EntryMode == ENTRY_ON_BREAK_TOUCH)
         {
@@ -552,7 +577,7 @@ void CheckBreakouts()
         }
      }
 
-   if(!g_PWLTradeExecuted)
+   if(TradePWL_Enabled && !g_PWLTradeExecuted)
      {
       if(EntryMode == ENTRY_ON_BREAK_TOUCH)
         {
