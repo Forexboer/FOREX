@@ -811,6 +811,8 @@ void ApplyTrailingStops()
       if(!isBuy && !isSell)
          continue;
 
+      long posIdentifier = (long)PositionGetInteger(POSITION_IDENTIFIER);
+      datetime posOpenTime = (datetime)PositionGetInteger(POSITION_TIME);
       double oldSL = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
       double newSL = oldSL;
@@ -897,10 +899,16 @@ void ApplyTrailingStops()
          continue;
         }
 
-      if(!PositionSelectByTicket(posTicket))
+      if(posTicket <= 0 || !PositionSelectByTicket(posTicket))
         {
-         PrintFormat("Trailing modify skipped (%s %s): position closed. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
-                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, newSL, tp, stopLevelPoints, freezeLevelPoints);
+         PrintFormat("Trailing modify skipped (%s #%I64u): reason=\"position not found/closed\"", symbol, posTicket);
+         continue;
+        }
+      if(PositionGetDouble(POSITION_VOLUME) <= 0.0
+         || (long)PositionGetInteger(POSITION_IDENTIFIER) != posIdentifier
+         || (datetime)PositionGetInteger(POSITION_TIME) != posOpenTime)
+        {
+         PrintFormat("Trailing modify skipped (%s #%I64u): reason=\"position not found/closed\"", symbol, posTicket);
          continue;
         }
 
@@ -963,6 +971,8 @@ void ApplyLockProfitAndTrailing()
       if(!isBuy && !isSell)
          continue;
 
+      long posIdentifier = (long)PositionGetInteger(POSITION_IDENTIFIER);
+      datetime posOpenTime = (datetime)PositionGetInteger(POSITION_TIME);
       if(InpUseHoldAfterEntry && InpHoldSecondsAfterEntry > 0)
         {
          datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
@@ -1036,10 +1046,16 @@ void ApplyLockProfitAndTrailing()
               }
             else
               {
-               if(!PositionSelectByTicket(posTicket))
+               if(posTicket <= 0 || !PositionSelectByTicket(posTicket))
                  {
-                  PrintFormat("Lock profit modify skipped (%s %s): position closed. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
-                              symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredSL, tp, stopLevelPoints, freezeLevelPoints);
+                  PrintFormat("Lock profit modify skipped (%s #%I64u): reason=\"position not found/closed\"", symbol, posTicket);
+                  continue;
+                 }
+               if(PositionGetDouble(POSITION_VOLUME) <= 0.0
+                  || (long)PositionGetInteger(POSITION_IDENTIFIER) != posIdentifier
+                  || (datetime)PositionGetInteger(POSITION_TIME) != posOpenTime)
+                 {
+                  PrintFormat("Lock profit modify skipped (%s #%I64u): reason=\"position not found/closed\"", symbol, posTicket);
                   continue;
                  }
                ResetLastError();
@@ -1111,10 +1127,16 @@ void ApplyLockProfitAndTrailing()
          continue;
         }
 
-      if(!PositionSelectByTicket(posTicket))
+      if(posTicket <= 0 || !PositionSelectByTicket(posTicket))
         {
-         PrintFormat("Trailing modify skipped (%s %s): position closed. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
-                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredTrailSL, tp, stopLevelPoints, freezeLevelPoints);
+         PrintFormat("Trailing modify skipped (%s #%I64u): reason=\"position not found/closed\"", symbol, posTicket);
+         continue;
+        }
+      if(PositionGetDouble(POSITION_VOLUME) <= 0.0
+         || (long)PositionGetInteger(POSITION_IDENTIFIER) != posIdentifier
+         || (datetime)PositionGetInteger(POSITION_TIME) != posOpenTime)
+        {
+         PrintFormat("Trailing modify skipped (%s #%I64u): reason=\"position not found/closed\"", symbol, posTicket);
          continue;
         }
 
