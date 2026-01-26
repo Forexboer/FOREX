@@ -42,8 +42,6 @@ input bool              InpEnableEA              = true;
 input bool              InpUseRiskPercent        = true;
 input double            InpRiskPercentPerTrade   = 1.0;         // percent of equity if risk sizing enabled
 input double            InpFixedLot              = 0.10;        // used only when InpUseRiskPercent == false
-input double            InpMaxLotPerTrade        = 1.00;        // hard cap for XAUUSD
-input double            InpMarginSafetyFactor    = 0.90;        // use only 90% of free margin
 input ENUM_ENTRY_MODE   EntryMode                = ENTRY_ON_BREAK_TOUCH;
 input ENUM_SL_MODE      SLMode                   = SL_MODE_ATR;
 input ENUM_TP_MODE      TPMode                   = TP_MODE_RR;
@@ -194,14 +192,6 @@ double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price)
 
    double clampedVolume = requestedVolume;
 
-   if(InpMaxLotPerTrade > 0.0)
-     {
-      if(maxLot > 0.0)
-         maxLot = MathMin(maxLot, InpMaxLotPerTrade);
-      else
-         maxLot = InpMaxLotPerTrade;
-     }
-
    if(maxLot > 0)
       clampedVolume = MathMin(clampedVolume, maxLot);
 
@@ -230,8 +220,6 @@ double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price)
    clampedVolume = NormalizeDouble(clampedVolume, precision);
 
    g_lastMarginFree = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-   double safetyFactor = MathMax(0.0, MathMin(1.0, InpMarginSafetyFactor));
-   g_lastMarginFree *= safetyFactor;
 
    double requiredMargin = 0.0;
    ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
@@ -1198,7 +1186,7 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
      }
 
    if(MathAbs(clampedVolume - volume) > 0.0000001)
-      PrintFormat("Margin clamp applied (%s %s): wanted=%.2f used=%.2f free=%.2f required=%.2f",
+      PrintFormat("Volume adjusted to fit margin limits (%s %s): wanted=%.2f used=%.2f free=%.2f required=%.2f",
                   _Symbol, isBuy ? "BUY" : "SELL", volume, clampedVolume, g_lastMarginFree, g_lastMarginRequired);
 
    volume = clampedVolume;
