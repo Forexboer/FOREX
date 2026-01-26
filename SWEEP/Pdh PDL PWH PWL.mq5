@@ -123,6 +123,7 @@ bool                    g_PDHTradeExecuted = false;
 bool                    g_PDLTradeExecuted = false;
 bool                    g_PWHTradeExecuted = false;
 bool                    g_PWLTradeExecuted = false;
+bool                    g_rolloverWasBlocking = false;
 
 datetime                g_lastDailyReference = 0;
 datetime                g_lastWeeklyReference = 0;
@@ -610,10 +611,20 @@ bool ShouldBlockNewEntries()
    if(InpUseRolloverBlock && g_rolloverStartMinutes >= 0 && g_rolloverEndMinutes >= 0)
      {
       int minutes = MinutesFromDatetime(TimeCurrent());
-      if(IsMinutesInWindow(minutes, g_rolloverStartMinutes, g_rolloverEndMinutes))
+      bool inRollover = IsMinutesInWindow(minutes, g_rolloverStartMinutes, g_rolloverEndMinutes);
+      if(inRollover)
         {
-         Log("Entries blocked: rollover block window");
+         if(!g_rolloverWasBlocking)
+           {
+            Log("Entries blocked: rollover block STARTED");
+            g_rolloverWasBlocking = true;
+           }
          return(true);
+        }
+      if(g_rolloverWasBlocking)
+        {
+         Log("Entries allowed: rollover block ENDED");
+         g_rolloverWasBlocking = false;
         }
      }
 
