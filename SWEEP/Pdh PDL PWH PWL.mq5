@@ -792,6 +792,8 @@ void ApplyTrailingStops()
    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
      {
       ulong posTicket = PositionGetTicket(positionIndex);
+      if(posTicket == 0)
+         continue;
       if(!PositionSelectByTicket(posTicket))
          continue;
 
@@ -869,6 +871,16 @@ void ApplyTrailingStops()
       bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
+      bool priceSideValid = isBuy
+                            ? (newSL < bid && (tp <= 0.0 || tp > bid))
+                            : (newSL > ask && (tp <= 0.0 || tp < ask));
+      if(!priceSideValid)
+        {
+         PrintFormat("Trailing modify skipped (%s %s): priceSide. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, newSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
+
       if(!IsValidSLTP(isBuy, newSL, tp, bid, ask))
         {
          PrintFormat("Trailing modify skipped (%s %s): invalid side. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
@@ -882,6 +894,13 @@ void ApplyTrailingStops()
          string reason = (stopLevelPoints > 0 && distance < stopLevelPoints * point) ? "stopLevel" : "freezeLevel";
          PrintFormat("Trailing modify skipped (%s %s): %s. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
                      symbol, isBuy ? "BUY" : "SELL", reason, bid, ask, oldSL, newSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
+
+      if(!PositionSelectByTicket(posTicket))
+        {
+         PrintFormat("Trailing modify skipped (%s %s): position closed. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, newSL, tp, stopLevelPoints, freezeLevelPoints);
          continue;
         }
 
@@ -925,6 +944,8 @@ void ApplyLockProfitAndTrailing()
    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
      {
       ulong posTicket = PositionGetTicket(positionIndex);
+      if(posTicket == 0)
+         continue;
       if(!PositionSelectByTicket(posTicket))
          continue;
 
@@ -992,6 +1013,15 @@ void ApplyLockProfitAndTrailing()
             bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
+            bool priceSideValid = isBuy
+                                  ? (desiredSL < bid && (tp <= 0.0 || tp > bid))
+                                  : (desiredSL > ask && (tp <= 0.0 || tp < ask));
+            if(!priceSideValid)
+              {
+               PrintFormat("Lock profit modify skipped (%s %s): priceSide. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                           symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredSL, tp, stopLevelPoints, freezeLevelPoints);
+              }
+            else
             if(!IsValidSLTP(isBuy, desiredSL, tp, bid, ask))
               {
                PrintFormat("Lock profit modify skipped (%s %s): invalid side. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
@@ -1006,6 +1036,12 @@ void ApplyLockProfitAndTrailing()
               }
             else
               {
+               if(!PositionSelectByTicket(posTicket))
+                 {
+                  PrintFormat("Lock profit modify skipped (%s %s): position closed. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                              symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredSL, tp, stopLevelPoints, freezeLevelPoints);
+                  continue;
+                 }
                ResetLastError();
                if(trade.PositionModify(symbol, desiredSL, tp))
                  {
@@ -1049,6 +1085,16 @@ void ApplyLockProfitAndTrailing()
       bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
+      bool priceSideValid = isBuy
+                            ? (desiredTrailSL < bid && (tp <= 0.0 || tp > bid))
+                            : (desiredTrailSL > ask && (tp <= 0.0 || tp < ask));
+      if(!priceSideValid)
+        {
+         PrintFormat("Trailing modify skipped (%s %s): priceSide. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredTrailSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
+
       if(!IsValidSLTP(isBuy, desiredTrailSL, tp, bid, ask))
         {
          PrintFormat("Trailing modify skipped (%s %s): invalid side. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
@@ -1062,6 +1108,13 @@ void ApplyLockProfitAndTrailing()
          string reason = (stopLevelPoints > 0 && distance < stopLevelPoints * point) ? "stopLevel" : "freezeLevel";
          PrintFormat("Trailing modify skipped (%s %s): %s. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
                      symbol, isBuy ? "BUY" : "SELL", reason, bid, ask, oldSL, desiredTrailSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
+
+      if(!PositionSelectByTicket(posTicket))
+        {
+         PrintFormat("Trailing modify skipped (%s %s): position closed. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredTrailSL, tp, stopLevelPoints, freezeLevelPoints);
          continue;
         }
 
@@ -1133,6 +1186,36 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
 
    stopLossPrice   = NormalizeDouble(stopLossPrice, _Digits);
    takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
+
+   int stopLevelPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double stopDist = stopLevelPts * _Point;
+   double bid = tick.bid;
+   double ask = tick.ask;
+   bool stopsValid = true;
+   if(isBuy)
+     {
+      if(!(stopLossPrice < (bid - stopDist) && takeProfitPrice > (ask + stopDist)))
+         stopsValid = false;
+     }
+   else
+     {
+      if(!(stopLossPrice > (ask + stopDist) && takeProfitPrice < (bid - stopDist)))
+         stopsValid = false;
+     }
+
+   if(!stopsValid)
+     {
+      PrintFormat("Trade skipped (invalid stops) %s %s: bid=%.5f ask=%.5f stopLevelPts=%d stopDist=%.5f SL=%.5f TP=%.5f",
+                  _Symbol,
+                  isBuy ? "BUY" : "SELL",
+                  bid,
+                  ask,
+                  stopLevelPts,
+                  stopDist,
+                  stopLossPrice,
+                  takeProfitPrice);
+      return(false);
+     }
 
    if(InpUseSlippageControl)
       trade.SetDeviationInPoints((int)MathMax(0, InpSlippagePoints));
