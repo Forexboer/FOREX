@@ -168,6 +168,7 @@ double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price);
 double CalculateStopDistance();
 double CalculateTakeProfitDistance(double stopDistance);
 double CalculateVolume(double riskDistance);
+double CalculateVolumeFromStopLoss(bool isBuy, double entryPrice, double stopLossPrice);
 double GetPipSize();
 bool   IsValidSLTP(bool isBuy, double sl, double tp, double bid, double ask);
 bool   RespectsStopsAndFreeze(bool isBuy, double sl, double bid, double ask, double point, int stopLevelPts, int freezeLevelPts);
@@ -1179,8 +1180,17 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
       return(false);
      }
 
-   double riskDistance    = stopDistance + spread + slippage;
-   double volume          = CalculateVolume(riskDistance);
+   double stopLossPrice   = isBuy ? entryPrice - stopDistance - spread : entryPrice + stopDistance + spread;
+   double takeProfitPrice = isBuy ? entryPrice + tpDistance : entryPrice - tpDistance;
+
+   stopLossPrice   = NormalizeDouble(stopLossPrice, _Digits);
+   takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
+
+   double volume = 0.0;
+   if(InpUseRiskPercent)
+      volume = CalculateVolumeFromStopLoss(isBuy, entryPrice, stopLossPrice);
+   else
+      volume = CalculateVolume(0.0);
    if(volume <= 0)
      {
       Print("Calculated volume invalid");
@@ -1201,12 +1211,6 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
                   _Symbol, isBuy ? "BUY" : "SELL", volume, clampedVolume, g_lastMarginFree, g_lastMarginRequired);
 
    volume = clampedVolume;
-
-   double stopLossPrice   = isBuy ? entryPrice - stopDistance - spread : entryPrice + stopDistance + spread;
-   double takeProfitPrice = isBuy ? entryPrice + tpDistance : entryPrice - tpDistance;
-
-   stopLossPrice   = NormalizeDouble(stopLossPrice, _Digits);
-   takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
 
    int stopLevelPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double stopDist = stopLevelPts * _Point;
@@ -1362,6 +1366,66 @@ double CalculateVolume(double riskDistance)
    volume = NormalizeDouble(volume, precision);
 
    return(volume);
+  }
+
+double CalculateVolumeFromStopLoss(bool isBuy, double entryPrice, double stopLossPrice)
+  {
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   double riskAmount = AccountInfoDouble(ACCOUNT_EQUITY) * InpRiskPercentPerTrade / 100.0;
+   if(riskAmount <= 0.0)
+      return(0.0);
+
+   double profit = 0.0;
+   ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(orderType, _Symbol, 1.0, entryPrice, stopLossPrice, profit))
+      return(0.0);
+
+   double lossPerLot = -profit;
+   if(lossPerLot <= 0.0)
+      return(0.0);
+
+   double commissionPerLot = 0.0;
+   static bool commissionWarningShown = false;
+   if(IncludeCommissionsInRisk)
+     {
+      commissionPerLot = MathMax(CommissionPerLot, 0.0);
+      if(commissionPerLot == 0.0 && !commissionWarningShown)
+        {
+         Print("CommissionPerLot is zero while IncludeCommissionsInRisk is enabled. No commission will be included in risk calculations.");
+         commissionWarningShown = true;
+        }
+     }
+
+   double totalPerLot = lossPerLot + commissionPerLot;
+   if(totalPerLot <= 0.0)
+      return(0.0);
+
+   double volume = riskAmount / totalPerLot;
+
+   if(step > 0.0)
+      volume = MathFloor(volume / step + 0.0000001) * step;
+
+   if(minLot > 0)
+      volume = MathMax(volume, minLot);
+   if(maxLot > 0)
+      volume = MathMin(volume, maxLot);
+
+   int precision = 2;
+   if(step > 0.0)
+     {
+      double logValue = -MathLog10(step);
+      if(MathIsValidNumber(logValue))
+        {
+         precision = (int)MathRound(logValue);
+         if(precision < 0)
+            precision = 2;
+        }
+     }
+
+   return(NormalizeDouble(volume, precision));
   }
 
 double GetPipSize()
