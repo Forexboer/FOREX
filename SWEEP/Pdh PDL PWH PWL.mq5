@@ -42,6 +42,8 @@ input bool              InpEnableEA              = true;
 input bool              InpUseRiskPercent        = true;
 input double            InpRiskPercentPerTrade   = 1.0;         // percent of equity if risk sizing enabled
 input double            InpFixedLot              = 0.10;        // used only when InpUseRiskPercent == false
+input double            InpMaxLotPerTrade        = 1.00;        // hard cap for XAUUSD
+input double            InpMarginSafetyFactor    = 0.90;        // use only 90% of free margin
 input ENUM_ENTRY_MODE   EntryMode                = ENTRY_ON_BREAK_TOUCH;
 input ENUM_SL_MODE      SLMode                   = SL_MODE_ATR;
 input ENUM_TP_MODE      TPMode                   = TP_MODE_RR;
@@ -138,6 +140,8 @@ int                     g_rolloverStartMinutes = -1;
 int                     g_rolloverEndMinutes   = -1;
 
 int                     g_atrHandle           = INVALID_HANDLE;
+double                  g_lastMarginRequired  = 0.0;
+double                  g_lastMarginFree      = 0.0;
 
 const string            ECON_CALENDAR_URL      = "http://nfs.faireconomy.media/ff_calendar_thisweek.xml";
 
@@ -161,11 +165,13 @@ bool   ShouldBlockForNews();
 void   UpdateDailyEntryControls(bool force);
 bool   ShouldBlockNewEntries();
 bool   ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &flag);
-bool   ClampVolumeByMargin(bool isBuy, double requestedVolume, double price, double &clampedVolume, double &requiredMargin, double &freeMargin);
+double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price);
 double CalculateStopDistance();
 double CalculateTakeProfitDistance(double stopDistance);
 double CalculateVolume(double riskDistance);
 double GetPipSize();
+bool   IsValidSLTP(bool isBuy, double sl, double tp, double bid, double ask);
+bool   RespectsStopsAndFreeze(bool isBuy, double sl, double bid, double ask, double point, int stopLevelPts, int freezeLevelPts);
 bool   ImpactAllowed(const string impact);
 bool   MatchesSymbolCurrencies(const string symbol, const string eventCurrency);
 bool   IsHighImpactNewsNear(int beforeMinutes, int afterMinutes);
@@ -180,28 +186,24 @@ void   ApplyTrailingStops();
 void   ApplyLockProfitAndTrailing();
 void   ApplyTimeBasedExit();
 
-bool ClampVolumeByMargin(bool isBuy, double requestedVolume, double price, double &clampedVolume, double &requiredMargin, double &freeMargin)
+double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price)
   {
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
-   clampedVolume = requestedVolume;
+   double clampedVolume = requestedVolume;
+
+   if(InpMaxLotPerTrade > 0.0)
+     {
+      if(maxLot > 0.0)
+         maxLot = MathMin(maxLot, InpMaxLotPerTrade);
+      else
+         maxLot = InpMaxLotPerTrade;
+     }
 
    if(maxLot > 0)
       clampedVolume = MathMin(clampedVolume, maxLot);
-
-   if(step > 0)
-      clampedVolume = MathFloor(clampedVolume / step + 0.0000001) * step;
-
-   if(minLot > 0 && clampedVolume < minLot)
-     {
-      freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
-      requiredMargin = 0.0;
-      PrintFormat("Margin clamp: free=%.2f required=%.2f original=%.2f clamped=%.2f (below min lot)",
-                  freeMargin, requiredMargin, requestedVolume, clampedVolume);
-      return(false);
-     }
 
    int precision = 2;
    if(step > 0)
@@ -214,21 +216,34 @@ bool ClampVolumeByMargin(bool isBuy, double requestedVolume, double price, doubl
             precision = 2;
         }
      }
+
+   if(step > 0)
+      clampedVolume = MathFloor(clampedVolume / step + 0.0000001) * step;
+
+   if(minLot > 0 && clampedVolume < minLot)
+     {
+      g_lastMarginFree = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      g_lastMarginRequired = 0.0;
+      return(0.0);
+     }
+
    clampedVolume = NormalizeDouble(clampedVolume, precision);
 
-   freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   g_lastMarginFree = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double safetyFactor = MathMax(0.0, MathMin(1.0, InpMarginSafetyFactor));
+   g_lastMarginFree *= safetyFactor;
+
+   double requiredMargin = 0.0;
    ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    if(!OrderCalcMargin(orderType, _Symbol, clampedVolume, price, requiredMargin))
      {
-      int error = GetLastError();
-      PrintFormat("OrderCalcMargin failed (error=%d). free=%.2f original=%.2f clamped=%.2f",
-                  error, freeMargin, requestedVolume, clampedVolume);
-      return(false);
+      g_lastMarginRequired = 0.0;
+      return(0.0);
      }
 
-   while(requiredMargin > freeMargin)
+   while(requiredMargin > g_lastMarginFree)
      {
-      if(step <= 0)
+      if(step <= 0.0)
          break;
 
       clampedVolume = MathFloor((clampedVolume - step) / step + 0.0000001) * step;
@@ -239,21 +254,57 @@ bool ClampVolumeByMargin(bool isBuy, double requestedVolume, double price, doubl
 
       if(!OrderCalcMargin(orderType, _Symbol, clampedVolume, price, requiredMargin))
         {
-         int error = GetLastError();
-         PrintFormat("OrderCalcMargin failed (error=%d). free=%.2f original=%.2f clamped=%.2f",
-                     error, freeMargin, requestedVolume, clampedVolume);
-         return(false);
+         g_lastMarginRequired = 0.0;
+         return(0.0);
         }
      }
 
-   PrintFormat("Margin clamp: free=%.2f required=%.2f original=%.2f clamped=%.2f",
-               freeMargin, requiredMargin, requestedVolume, clampedVolume);
+   g_lastMarginRequired = requiredMargin;
 
-   if(requiredMargin > freeMargin)
-      return(false);
+   if(requiredMargin > g_lastMarginFree)
+      return(0.0);
    if(minLot > 0 && clampedVolume < minLot)
-      return(false);
+      return(0.0);
    if(clampedVolume <= 0.0)
+      return(0.0);
+
+   return(clampedVolume);
+  }
+
+bool IsValidSLTP(bool isBuy, double sl, double tp, double bid, double ask)
+  {
+   if(sl <= 0.0)
+      return(false);
+
+   if(isBuy)
+     {
+      if(sl >= bid)
+         return(false);
+      if(tp > 0.0 && tp <= bid)
+         return(false);
+     }
+   else
+     {
+      if(sl <= ask)
+         return(false);
+      if(tp > 0.0 && tp >= ask)
+         return(false);
+     }
+
+   return(true);
+  }
+
+bool RespectsStopsAndFreeze(bool isBuy, double sl, double bid, double ask, double point, int stopLevelPts, int freezeLevelPts)
+  {
+   if(sl <= 0.0)
+      return(false);
+
+   double distance = isBuy ? (bid - sl) : (sl - ask);
+
+   if(stopLevelPts > 0 && distance < stopLevelPts * point)
+      return(false);
+
+   if(freezeLevelPts > 0 && distance < freezeLevelPts * point)
       return(false);
 
    return(true);
@@ -737,8 +788,6 @@ void ApplyTrailingStops()
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    int    stopLevelPoints   = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    int    freezeLevelPoints = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
-   double stopDistance      = stopLevelPoints * point;
-   double freezeDistance    = freezeLevelPoints * point;
 
    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
      {
@@ -804,32 +853,6 @@ void ApplyTrailingStops()
 
       newSL = NormalizeDouble(newSL, digits);
 
-      // honour broker stop-level so the stop never sits closer to price than allowed
-      if(stopDistance > 0)
-        {
-         if(isBuy)
-            newSL = MathMin(newSL, bid - stopDistance); // FIX
-         else
-            newSL = MathMax(newSL, ask + stopDistance); // FIX
-        }
-
-      // freeze-level check prevents submitting an update too close to current price
-      if(freezeDistance > 0)
-        {
-         if(isBuy)
-            newSL = MathMin(newSL, bid - freezeDistance); // FIX
-         else
-            newSL = MathMax(newSL, ask + freezeDistance); // FIX
-        }
-
-      if(tp > 0)
-        {
-         if(isBuy && newSL > tp)
-            newSL = tp;
-         if(isSell && newSL < tp)
-            newSL = tp;
-        }
-
       if(isBuy)
         {
          if(newSL <= 0.0 || newSL <= oldSL)
@@ -841,6 +864,25 @@ void ApplyTrailingStops()
             continue;
          if(oldSL != 0.0 && newSL >= oldSL)
             continue;
+        }
+
+      bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      if(!IsValidSLTP(isBuy, newSL, tp, bid, ask))
+        {
+         PrintFormat("Trailing modify skipped (%s %s): invalid side. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, newSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
+
+      if(!RespectsStopsAndFreeze(isBuy, newSL, bid, ask, point, stopLevelPoints, freezeLevelPoints))
+        {
+         double distance = isBuy ? (bid - newSL) : (newSL - ask);
+         string reason = (stopLevelPoints > 0 && distance < stopLevelPoints * point) ? "stopLevel" : "freezeLevel";
+         PrintFormat("Trailing modify skipped (%s %s): %s. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", reason, bid, ask, oldSL, newSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
         }
 
       ResetLastError();
@@ -879,8 +921,6 @@ void ApplyLockProfitAndTrailing()
 
    int    stopLevelPoints   = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    int    freezeLevelPoints = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
-   double stopDistance      = stopLevelPoints * point;
-   double freezeDistance    = freezeLevelPoints * point;
 
    for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
      {
@@ -947,29 +987,40 @@ void ApplyLockProfitAndTrailing()
          else
             improve = (oldSL == 0.0 || desiredSL < oldSL);
 
-         double distanceToPrice = isBuy ? (bid - desiredSL) : (desiredSL - ask);
-         bool respectsStops = true;
-         if(stopDistance > 0.0 && distanceToPrice < stopDistance)
-            respectsStops = false;
-         if(freezeDistance > 0.0 && distanceToPrice < freezeDistance)
-            respectsStops = false;
-
-         if(desiredSL > 0.0 && improve && respectsStops)
+         if(desiredSL > 0.0 && improve)
            {
-            ResetLastError();
-            if(trade.PositionModify(symbol, desiredSL, tp))
+            bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+            if(!IsValidSLTP(isBuy, desiredSL, tp, bid, ask))
               {
-               oldSL = desiredSL;
-               lockActive = true;
+               PrintFormat("Lock profit modify skipped (%s %s): invalid side. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                           symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredSL, tp, stopLevelPoints, freezeLevelPoints);
+              }
+            else if(!RespectsStopsAndFreeze(isBuy, desiredSL, bid, ask, point, stopLevelPoints, freezeLevelPoints))
+              {
+               double distance = isBuy ? (bid - desiredSL) : (desiredSL - ask);
+               string reason = (stopLevelPoints > 0 && distance < stopLevelPoints * point) ? "stopLevel" : "freezeLevel";
+               PrintFormat("Lock profit modify skipped (%s %s): %s. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                           symbol, isBuy ? "BUY" : "SELL", reason, bid, ask, oldSL, desiredSL, tp, stopLevelPoints, freezeLevelPoints);
               }
             else
               {
-               int error = GetLastError();
-               PrintFormat("Lock profit update failed for %s (%s). Error=%d. %s",
-                           symbol,
-                           isBuy ? "BUY" : "SELL",
-                           error,
-                           trade.ResultRetcodeDescription());
+               ResetLastError();
+               if(trade.PositionModify(symbol, desiredSL, tp))
+                 {
+                  oldSL = desiredSL;
+                  lockActive = true;
+                 }
+               else
+                 {
+                  int error = GetLastError();
+                  PrintFormat("Lock profit update failed for %s (%s). Error=%d. %s",
+                              symbol,
+                              isBuy ? "BUY" : "SELL",
+                              error,
+                              trade.ResultRetcodeDescription());
+                 }
               }
            }
         }
@@ -992,15 +1043,27 @@ void ApplyLockProfitAndTrailing()
       else
          trailImprove = (oldSL == 0.0 || desiredTrailSL < oldSL);
 
-      double trailDistanceToPrice = isBuy ? (bid - desiredTrailSL) : (desiredTrailSL - ask);
-      bool trailRespectsStops = true;
-      if(stopDistance > 0.0 && trailDistanceToPrice < stopDistance)
-         trailRespectsStops = false;
-      if(freezeDistance > 0.0 && trailDistanceToPrice < freezeDistance)
-         trailRespectsStops = false;
-
-      if(desiredTrailSL <= 0.0 || !trailImprove || !trailRespectsStops)
+      if(desiredTrailSL <= 0.0 || !trailImprove)
          continue;
+
+      bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      if(!IsValidSLTP(isBuy, desiredTrailSL, tp, bid, ask))
+        {
+         PrintFormat("Trailing modify skipped (%s %s): invalid side. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", bid, ask, oldSL, desiredTrailSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
+
+      if(!RespectsStopsAndFreeze(isBuy, desiredTrailSL, bid, ask, point, stopLevelPoints, freezeLevelPoints))
+        {
+         double distance = isBuy ? (bid - desiredTrailSL) : (desiredTrailSL - ask);
+         string reason = (stopLevelPoints > 0 && distance < stopLevelPoints * point) ? "stopLevel" : "freezeLevel";
+         PrintFormat("Trailing modify skipped (%s %s): %s. bid=%.5f ask=%.5f oldSL=%.5f newSL=%.5f tp=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     symbol, isBuy ? "BUY" : "SELL", reason, bid, ask, oldSL, desiredTrailSL, tp, stopLevelPoints, freezeLevelPoints);
+         continue;
+        }
 
       ResetLastError();
       if(!trade.PositionModify(symbol, desiredTrailSL, tp))
@@ -1050,16 +1113,18 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
       return(false);
      }
 
-   double freeMargin     = 0.0;
-   double requiredMargin = 0.0;
-   double clampedVolume  = 0.0;
    double marginPrice    = isBuy ? tick.ask : tick.bid;
-   if(!ClampVolumeByMargin(isBuy, volume, marginPrice, clampedVolume, requiredMargin, freeMargin))
+   double clampedVolume  = ClampVolumeByMargin(isBuy, volume, marginPrice);
+   if(clampedVolume <= 0.0)
      {
-      PrintFormat("Trade skipped due to margin limits. free=%.2f required=%.2f original=%.2f clamped=%.2f",
-                  freeMargin, requiredMargin, volume, clampedVolume);
+      PrintFormat("Trade skipped due to margin limits (%s %s). free=%.2f required=%.2f wanted=%.2f",
+                  _Symbol, isBuy ? "BUY" : "SELL", g_lastMarginFree, g_lastMarginRequired, volume);
       return(false);
      }
+
+   if(MathAbs(clampedVolume - volume) > 0.0000001)
+      PrintFormat("Margin clamp applied (%s %s): wanted=%.2f used=%.2f free=%.2f required=%.2f",
+                  _Symbol, isBuy ? "BUY" : "SELL", volume, clampedVolume, g_lastMarginFree, g_lastMarginRequired);
 
    volume = clampedVolume;
 
