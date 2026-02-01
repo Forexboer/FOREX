@@ -54,6 +54,14 @@ input bool              InpSkipDayOnGap          = true;
 input bool              InpUseSlippageControl    = true;
 input int               InpSlippagePoints        = 30;
 
+input bool              InpUseLockProfit             = false;
+input int               InpLockProfitTriggerPoints   = 200;
+input int               InpLockProfitDistancePoints  = 50;
+input bool              InpUseTrailingStop           = false;
+input int               InpTrailingStartPoints       = 200;
+input int               InpTrailingStepPoints        = 10;
+input int               InpTrailingDistancePoints    = 100;
+
 input bool              ShowPDH                  = true;
 input bool              ShowPDL                  = true;
 input bool              ShowPWH                  = true;
@@ -161,6 +169,7 @@ string Trim(const string text);
 string NormalizeSymbol(const string symbol);
 void   Log(const string message);
 void   ApplyTimeBasedExit();
+void   ManageOpenPosition();
 
 double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price)
   {
@@ -319,6 +328,7 @@ void OnTick()
    UpdateDailyEntryControls(false);
 
    ApplyTimeBasedExit();
+   ManageOpenPosition();
    if(!ShouldBlockNewEntries())
       CheckBreakouts();
   }
@@ -1280,5 +1290,120 @@ void ApplyTimeBasedExit()
          Log(StringFormat("Time-based exit closed %s after %d minutes", _Symbol, minutesInTrade));
       else
          Log(StringFormat("Time-based exit failed to close %s after %d minutes. %s", _Symbol, minutesInTrade, trade.ResultRetcodeDescription()));
+     }
+  }
+
+void ManageOpenPosition()
+  {
+   if(!PositionSelect(_Symbol))
+      return;
+
+   long magic = (long)PositionGetInteger(POSITION_MAGIC);
+   if(magic != MagicNumber)
+      return;
+
+   int positionType = (int)PositionGetInteger(POSITION_TYPE);
+   bool isBuy = positionType == POSITION_TYPE_BUY;
+
+   double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid <= 0.0 || ask <= 0.0)
+      return;
+
+   double profitPoints = isBuy ? (bid - entryPrice) / _Point : (entryPrice - ask) / _Point;
+   if(profitPoints <= 0.0)
+      return;
+
+   double lockSL = 0.0;
+   bool lockActive = false;
+   if(InpUseLockProfit && profitPoints >= InpLockProfitTriggerPoints)
+     {
+      lockSL = isBuy
+               ? entryPrice + InpLockProfitDistancePoints * _Point
+               : entryPrice - InpLockProfitDistancePoints * _Point;
+      lockSL = NormalizeDouble(lockSL, _Digits);
+      if(currentSL == 0.0 || (isBuy && lockSL > currentSL) || (!isBuy && lockSL < currentSL))
+         lockActive = true;
+     }
+
+   double trailSL = 0.0;
+   bool trailActive = false;
+   if(InpUseTrailingStop && profitPoints >= InpTrailingStartPoints)
+     {
+      trailSL = isBuy
+                ? bid - InpTrailingDistancePoints * _Point
+                : ask + InpTrailingDistancePoints * _Point;
+      trailSL = NormalizeDouble(trailSL, _Digits);
+      double stepDistance = InpTrailingStepPoints * _Point;
+      bool stepOk = currentSL == 0.0 || MathAbs(trailSL - currentSL) >= stepDistance;
+      bool directionOk = currentSL == 0.0 || (isBuy && trailSL > currentSL) || (!isBuy && trailSL < currentSL);
+      if(stepOk && directionOk)
+         trailActive = true;
+     }
+
+   if(!lockActive && !trailActive)
+      return;
+
+   double desiredSL = 0.0;
+   string reason = "";
+   if(lockActive && trailActive)
+     {
+      if(isBuy)
+         desiredSL = MathMax(lockSL, trailSL);
+      else
+         desiredSL = MathMin(lockSL, trailSL);
+      reason = (desiredSL == lockSL) ? "LOCK" : "TRAIL";
+     }
+   else if(lockActive)
+     {
+      desiredSL = lockSL;
+      reason = "LOCK";
+     }
+   else
+     {
+      desiredSL = trailSL;
+      reason = "TRAIL";
+     }
+
+   if(desiredSL <= 0.0)
+      return;
+
+   desiredSL = NormalizeDouble(desiredSL, _Digits);
+   if(currentSL > 0.0)
+     {
+      if(isBuy && desiredSL <= currentSL)
+         return;
+      if(!isBuy && desiredSL >= currentSL)
+         return;
+     }
+
+   int stopLevelPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int freezeLevelPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double refBid = bid;
+   double refAsk = ask;
+
+   if(!IsValidSLTP(isBuy, desiredSL, currentTP, refBid, refAsk))
+      return;
+   if(!RespectsStopsAndFreeze(isBuy, desiredSL, refBid, refAsk, _Point, stopLevelPts, freezeLevelPts))
+      return;
+
+   ResetLastError();
+   if(trade.PositionModify(_Symbol, desiredSL, currentTP))
+     {
+      string typeText = isBuy ? "BUY" : "SELL";
+      double refPrice = isBuy ? bid : ask;
+      Log(StringFormat("SL modified (%s %s) entry=%.5f price=%.5f oldSL=%.5f newSL=%.5f profitPts=%.1f reason=%s",
+                       _Symbol,
+                       typeText,
+                       entryPrice,
+                       refPrice,
+                       currentSL,
+                       desiredSL,
+                       profitPoints,
+                       reason));
      }
   }
