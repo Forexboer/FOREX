@@ -74,8 +74,15 @@ input int               NewsRefreshMinutes       = 15;
 input bool              TimeStop_Enabled         = true;
 input int               TimeStop_MaxMinutes      = 90;
 
-input bool               InpUseHoldAfterEntry    = false;
-input int                InpHoldSecondsAfterEntry = 30;
+input bool              LockProfit_Enabled       = true;
+input double            LockProfit_TriggerPoints = 120.0;
+input double            LockProfit_LockPoints    = 20.0;
+input bool              LockProfit_UseBEPlus     = true;
+input bool              TrailingStop_Enabled     = true;
+input bool              TrailingAfterLock_Only   = true;
+input double            TrailingDistancePoints   = 100.0;
+input bool              InpUseHoldAfterEntry     = false;
+input int               InpHoldSecondsAfterEntry = 30;
 
 input color             ChartBackgroundColor     = clrWhite;
 input color             ChartForegroundColor     = clrBlack;
@@ -161,6 +168,7 @@ string Trim(const string text);
 string NormalizeSymbol(const string symbol);
 void   Log(const string message);
 void   ApplyTimeBasedExit();
+void   ApplyLockProfitAndTrailing();
 
 double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price)
   {
@@ -317,6 +325,9 @@ void OnTick()
   {
    RefreshLevels(false, false);
    UpdateDailyEntryControls(false);
+
+   if(LockProfit_Enabled || TrailingStop_Enabled)
+      ApplyLockProfitAndTrailing();
 
    ApplyTimeBasedExit();
    if(!ShouldBlockNewEntries())
@@ -1247,6 +1258,140 @@ bool MatchesSymbolCurrencies(const string symbol, const string eventCurrency)
 void Log(const string message)
   {
    Print(TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS), " ", message);
+  }
+
+void ApplyLockProfitAndTrailing()
+  {
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick))
+      return;
+
+   double bid = tick.bid;
+   double ask = tick.ask;
+   int stopLevelPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   int freezeLevelPts = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   double lockOffsetPoints = LockProfit_UseBEPlus ? LockProfit_LockPoints : 0.0;
+
+   for(int positionIndex = PositionsTotal() - 1; positionIndex >= 0; --positionIndex)
+     {
+      ulong posTicket = PositionGetTicket(positionIndex);
+      if(!PositionSelectByTicket(posTicket))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      if(symbol != _Symbol)
+         continue;
+
+      long magic = (long)PositionGetInteger(POSITION_MAGIC);
+      if(magic != MagicNumber)
+         continue;
+
+      datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+      if(InpUseHoldAfterEntry && openTime > 0)
+        {
+         if((TimeCurrent() - openTime) < InpHoldSecondsAfterEntry)
+            continue;
+        }
+
+      ENUM_POSITION_TYPE positionType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool isBuy = (positionType == POSITION_TYPE_BUY);
+      if(!isBuy && positionType != POSITION_TYPE_SELL)
+         continue;
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double oldSL = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double profitPoints = isBuy ? (bid - openPrice) / _Point : (openPrice - ask) / _Point;
+      double newSL = oldSL;
+      bool lockActive = false;
+
+      if(LockProfit_Enabled && LockProfit_TriggerPoints > 0.0)
+        {
+         if(profitPoints >= LockProfit_TriggerPoints)
+           {
+            double desiredSL = isBuy
+                               ? openPrice + lockOffsetPoints * _Point
+                               : openPrice - lockOffsetPoints * _Point;
+            desiredSL = NormalizeDouble(desiredSL, _Digits);
+            bool improves = (oldSL == 0.0) ? true : (isBuy ? desiredSL > oldSL : desiredSL < oldSL);
+
+            if(improves)
+              {
+               bool valid = IsValidSLTP(isBuy, desiredSL, tp, bid, ask)
+                            && RespectsStopsAndFreeze(isBuy, desiredSL, bid, ask, _Point, stopLevelPts, freezeLevelPts);
+               if(valid)
+                 {
+                  newSL = desiredSL;
+                  lockActive = true;
+                 }
+               else
+                 {
+                  PrintFormat("LockProfit skipped for %s (ticket %I64u): invalid or stop/freeze. SL=%.5f TP=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                              _Symbol,
+                              posTicket,
+                              desiredSL,
+                              tp,
+                              stopLevelPts,
+                              freezeLevelPts);
+                 }
+              }
+           }
+
+         if(!lockActive && oldSL > 0.0)
+           {
+            double lockThreshold = isBuy
+                                   ? openPrice + lockOffsetPoints * _Point
+                                   : openPrice - lockOffsetPoints * _Point;
+            lockActive = isBuy ? (oldSL >= lockThreshold) : (oldSL <= lockThreshold);
+           }
+        }
+
+      if(TrailingStop_Enabled && TrailingDistancePoints > 0.0)
+        {
+         if(!TrailingAfterLock_Only || lockActive)
+           {
+            double desiredTrailSL = isBuy
+                                    ? bid - TrailingDistancePoints * _Point
+                                    : ask + TrailingDistancePoints * _Point;
+            desiredTrailSL = NormalizeDouble(desiredTrailSL, _Digits);
+            bool improves = (newSL == 0.0) ? true : (isBuy ? desiredTrailSL > newSL : desiredTrailSL < newSL);
+
+            if(improves)
+              {
+               bool valid = IsValidSLTP(isBuy, desiredTrailSL, tp, bid, ask)
+                            && RespectsStopsAndFreeze(isBuy, desiredTrailSL, bid, ask, _Point, stopLevelPts, freezeLevelPts);
+               if(valid)
+                 {
+                  newSL = desiredTrailSL;
+                 }
+               else
+                 {
+                  PrintFormat("Trailing stop skipped for %s (ticket %I64u): invalid or stop/freeze. SL=%.5f TP=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                              _Symbol,
+                              posTicket,
+                              desiredTrailSL,
+                              tp,
+                              stopLevelPts,
+                              freezeLevelPts);
+                 }
+              }
+           }
+        }
+
+      if(newSL > 0.0 && newSL != oldSL)
+        {
+         ResetLastError();
+         if(!trade.PositionModify(_Symbol, newSL, tp))
+           {
+            PrintFormat("Failed to modify position %I64u for %s. SL=%.5f TP=%.5f. %s",
+                        posTicket,
+                        _Symbol,
+                        newSL,
+                        tp,
+                        trade.ResultRetcodeDescription());
+           }
+        }
+     }
   }
 
 void ApplyTimeBasedExit()
