@@ -14,18 +14,18 @@ enum ENUM_ENTRY_MODE
 enum ENUM_SL_MODE
   {
    SL_MODE_ATR = 0,
-   SL_MODE_FIXED_PIPS = 1
+   SL_MODE_FIXED_POINTS = 1
   };
 
 enum ENUM_TP_MODE
   {
    TP_MODE_RR = 0,
-   TP_MODE_FIXED_PIPS = 1
+   TP_MODE_FIXED_POINTS = 1
   };
 
 enum ENUM_TRAILING_MODE
   {
-   TRAILING_MODE_STEP_PIPS = 0,
+   TRAILING_MODE_STEP_POINTS = 0,
    TRAILING_MODE_PREV_CANDLE_HL = 1,
    TRAILING_MODE_ATR_CANDLE = 2
   };
@@ -73,25 +73,25 @@ input bool              TradePWL_Enabled         = true;
 input ENUM_TIMEFRAMES   ATRTimeframe             = PERIOD_H1;
 input int               ATRPeriod                = 14;
 input double            ATRMultiplier            = 1.8;
-input int               FixedSLPips              = 50;
-input int               FixedTPPips              = 75;
-input double            BufferPips               = 1.0;
+input int               FixedSLPoints            = 500;
+input int               FixedTPPoints            = 750;
+input double            BufferPoints             = 10.0;
 input bool              PlotLevels               = true;
 input int               NewsRefreshMinutes       = 15;
 
 // trailing-stop inputs
-input ENUM_TRAILING_MODE TrailingMode            = TRAILING_MODE_PREV_CANDLE_HL; // STEP_PIPS, PREV_CANDLE_HL, ATR_CANDLE
+input ENUM_TRAILING_MODE TrailingMode            = TRAILING_MODE_PREV_CANDLE_HL; // STEP_POINTS, PREV_CANDLE_HL, ATR_CANDLE
 input ENUM_TIMEFRAMES    TrailingTimeframe       = PERIOD_CURRENT;               // timeframe used for candle/ATR data
-input double             StepPips                = 10.0;                         // step distance in pips for STEP_PIPS mode
-input double             OffsetPips              = 2.0;                          // additional buffer in pips for candle mode
+input double             StepPoints              = 100.0;                        // step distance in points for STEP_POINTS mode
+input double             OffsetPoints            = 20.0;                         // additional buffer in points for candle mode
 input double             ATRExt                  = 1.0;                          // ATR multiplier when ATR mode is active
 input bool               TrailingStop_Enabled    = true;
 input bool               LockProfit_Enabled      = true;
-input double             LockProfit_TriggerPips  = 12.0;
-input double             LockProfit_LockPips     = 12.0;
+input double             LockProfit_TriggerPoints = 120.0;
+input double             LockProfit_LockPoints    = 120.0;
 input bool               LockProfit_UseBEPlus    = true;
 input bool               TrailingAfterLock_Only  = true;
-input double             TrailingDistancePips    = 10.0;
+input double             TrailingDistancePoints  = 100.0;
 input bool               TimeStop_Enabled        = true;
 input int                TimeStop_MaxMinutes     = 90;
 input bool               InpUseHoldAfterEntry    = false;
@@ -165,11 +165,10 @@ void   UpdateDailyEntryControls(bool force);
 bool   ShouldBlockNewEntries();
 bool   ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &flag);
 double ClampVolumeByMargin(bool isBuy, double requestedVolume, double price);
-double CalculateStopDistance();
-double CalculateTakeProfitDistance(double stopDistance);
+double CalculateStopDistancePoints();
+double CalculateTakeProfitDistancePoints(double stopDistancePoints);
 double CalculateVolume(double riskDistance);
 double CalculateVolumeFromStopLoss(bool isBuy, double entryPrice, double stopLossPrice);
-double GetPipSize();
 bool   IsValidSLTP(bool isBuy, double sl, double tp, double bid, double ask);
 bool   RespectsStopsAndFreeze(bool isBuy, double sl, double bid, double ask, double point, int stopLevelPts, int freezeLevelPts);
 bool   ImpactAllowed(const string impact);
@@ -649,7 +648,7 @@ bool ShouldBlockNewEntries()
 
 void CheckBreakouts()
   {
-   double buffer = BufferPips * GetPipSize();
+   double buffer = BufferPoints * _Point;
 
    if(TradePDH_Enabled && !g_PDHTradeExecuted)
      {
@@ -731,7 +730,7 @@ void CheckBreakouts()
 void ApplyTrailingStops()
   {
    // nothing to do if no mode selected
-   if(TrailingMode != TRAILING_MODE_STEP_PIPS && TrailingMode != TRAILING_MODE_PREV_CANDLE_HL && TrailingMode != TRAILING_MODE_ATR_CANDLE)
+   if(TrailingMode != TRAILING_MODE_STEP_POINTS && TrailingMode != TRAILING_MODE_PREV_CANDLE_HL && TrailingMode != TRAILING_MODE_ATR_CANDLE)
       return;
 
    ENUM_TIMEFRAMES calcTF = (TrailingTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : TrailingTimeframe);
@@ -746,8 +745,8 @@ void ApplyTrailingStops()
 
    double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double stepDistance   = StepPips * GetPipSize(); // FIX
-   double offsetDistance = OffsetPips * GetPipSize(); // FIX
+   double stepDistance   = StepPoints * point;
+   double offsetDistance = OffsetPoints * point;
 
    double prevLow  = 0.0;
    double prevHigh = 0.0;
@@ -761,6 +760,7 @@ void ApplyTrailingStops()
      }
 
    double atrValue = 0.0;
+   double atrOffset = 0.0;
    if(TrailingMode == TRAILING_MODE_ATR_CANDLE)
      {
       int atrHandle = iATR(_Symbol, calcTF, ATRPeriod);
@@ -782,6 +782,8 @@ void ApplyTrailingStops()
       atrValue = atrBuffer[0];
       if(atrValue <= 0)
          return;
+      double atrPoints = atrValue / point;
+      atrOffset = atrPoints * ATRExt * point;
      }
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -820,7 +822,7 @@ void ApplyTrailingStops()
 
       switch(TrailingMode)
         {
-         case TRAILING_MODE_STEP_PIPS:
+         case TRAILING_MODE_STEP_POINTS:
             if(stepDistance <= 0.0)
                continue;
             if(isBuy)
@@ -846,7 +848,6 @@ void ApplyTrailingStops()
 
          case TRAILING_MODE_ATR_CANDLE:
             {
-             double atrOffset = atrValue * ATRExt;
              if(isBuy)
                 newSL = prevLow + atrOffset;
              else
@@ -934,11 +935,7 @@ void ApplyLockProfitAndTrailing()
    if(!TrailingStop_Enabled)
       return;
 
-   if(!LockProfit_Enabled && TrailingDistancePips <= 0.0)
-      return;
-
-   double pipSize = GetPipSize();
-   if(pipSize <= 0.0)
+   if(!LockProfit_Enabled && TrailingDistancePoints <= 0.0)
       return;
 
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -984,16 +981,16 @@ void ApplyLockProfitAndTrailing()
       double oldSL = PositionGetDouble(POSITION_SL);
       double tp    = PositionGetDouble(POSITION_TP);
 
-      double profitPips = 0.0;
+      double profitPoints = 0.0;
       if(isBuy)
-         profitPips = (bid - openPrice) / pipSize;
+         profitPoints = (bid - openPrice) / point;
       else
-         profitPips = (openPrice - ask) / pipSize;
+         profitPoints = (openPrice - ask) / point;
 
-      double lockOffsetPips = (LockProfit_UseBEPlus ? LockProfit_LockPips : 0.0);
+      double lockOffsetPoints = (LockProfit_UseBEPlus ? LockProfit_LockPoints : 0.0);
       double lockThreshold = isBuy
-                             ? openPrice + lockOffsetPips * pipSize
-                             : openPrice - lockOffsetPips * pipSize;
+                             ? openPrice + lockOffsetPoints * point
+                             : openPrice - lockOffsetPoints * point;
 
       bool lockActive = false;
       if(LockProfit_Enabled && oldSL > 0.0)
@@ -1004,11 +1001,11 @@ void ApplyLockProfitAndTrailing()
             lockActive = (oldSL <= lockThreshold);
         }
 
-      if(LockProfit_Enabled && LockProfit_TriggerPips > 0.0 && profitPips >= LockProfit_TriggerPips)
+      if(LockProfit_Enabled && LockProfit_TriggerPoints > 0.0 && profitPoints >= LockProfit_TriggerPoints)
         {
          double desiredSL = isBuy
-                            ? openPrice + LockProfit_LockPips * pipSize
-                            : openPrice - LockProfit_LockPips * pipSize;
+                            ? openPrice + LockProfit_LockPoints * point
+                            : openPrice - LockProfit_LockPoints * point;
 
          desiredSL = NormalizeDouble(desiredSL, digits);
 
@@ -1077,15 +1074,15 @@ void ApplyLockProfitAndTrailing()
            }
         }
 
-      if(TrailingDistancePips <= 0.0)
+      if(TrailingDistancePoints <= 0.0)
          continue;
 
       if(TrailingAfterLock_Only && !lockActive)
          continue;
 
       double desiredTrailSL = isBuy
-                              ? bid - TrailingDistancePips * pipSize
-                              : ask + TrailingDistancePips * pipSize;
+                              ? bid - TrailingDistancePoints * point
+                              : ask + TrailingDistancePoints * point;
 
       desiredTrailSL = NormalizeDouble(desiredTrailSL, digits);
 
@@ -1162,33 +1159,32 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
       return(false);
      }
 
-   double spread          = (tick.ask - tick.bid);
-   double slippage        = 0.5 * spread;
-   double entryPrice      = isBuy ? tick.ask + slippage : tick.bid - slippage;
-
-   double stopDistance    = CalculateStopDistance();
-   if(stopDistance <= 0)
+   double entryPriceRef = isBuy ? tick.ask : tick.bid;
+   double stopDistancePoints = CalculateStopDistancePoints();
+   if(stopDistancePoints <= 0)
      {
       Print("Stop distance invalid");
       return(false);
      }
 
-   double tpDistance      = CalculateTakeProfitDistance(stopDistance);
-   if(tpDistance <= 0)
+   double tpDistancePoints = CalculateTakeProfitDistancePoints(stopDistancePoints);
+   if(tpDistancePoints <= 0)
      {
       Print("TP distance invalid");
       return(false);
      }
 
-   double stopLossPrice   = isBuy ? entryPrice - stopDistance - spread : entryPrice + stopDistance + spread;
-   double takeProfitPrice = isBuy ? entryPrice + tpDistance : entryPrice - tpDistance;
+   double stopDistancePrice = stopDistancePoints * _Point;
+   double tpDistancePrice = tpDistancePoints * _Point;
+   double stopLossPriceRef = isBuy ? entryPriceRef - stopDistancePrice : entryPriceRef + stopDistancePrice;
+   double takeProfitPriceRef = isBuy ? entryPriceRef + tpDistancePrice : entryPriceRef - tpDistancePrice;
 
-   stopLossPrice   = NormalizeDouble(stopLossPrice, _Digits);
-   takeProfitPrice = NormalizeDouble(takeProfitPrice, _Digits);
+   stopLossPriceRef   = NormalizeDouble(stopLossPriceRef, _Digits);
+   takeProfitPriceRef = NormalizeDouble(takeProfitPriceRef, _Digits);
 
    double volume = 0.0;
    if(InpUseRiskPercent)
-      volume = CalculateVolumeFromStopLoss(isBuy, entryPrice, stopLossPrice);
+      volume = CalculateVolumeFromStopLoss(isBuy, entryPriceRef, stopLossPriceRef);
    else
       volume = CalculateVolume(0.0);
    if(volume <= 0)
@@ -1219,12 +1215,12 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
    bool stopsValid = true;
    if(isBuy)
      {
-      if(!(stopLossPrice < (bid - stopDist) && takeProfitPrice > (ask + stopDist)))
+      if(!(stopLossPriceRef < (bid - stopDist) && takeProfitPriceRef > (ask + stopDist)))
          stopsValid = false;
      }
    else
      {
-      if(!(stopLossPrice > (ask + stopDist) && takeProfitPrice < (bid - stopDist)))
+      if(!(stopLossPriceRef > (ask + stopDist) && takeProfitPriceRef < (bid - stopDist)))
          stopsValid = false;
      }
 
@@ -1237,26 +1233,93 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
                   ask,
                   stopLevelPts,
                   stopDist,
-                  stopLossPrice,
-                  takeProfitPrice);
+                  stopLossPriceRef,
+                  takeProfitPriceRef);
       return(false);
      }
 
    if(InpUseSlippageControl)
       trade.SetDeviationInPoints((int)MathMax(0, InpSlippagePoints));
    else
-      trade.SetDeviationInPoints((int)MathMax(3, MathCeil(spread / _Point)));
+      trade.SetDeviationInPoints(3);
 
    bool result = false;
    if(isBuy)
-      result = trade.Buy(volume, _Symbol, 0.0, stopLossPrice, takeProfitPrice, levelName + "_Buy");
+      result = trade.Buy(volume, _Symbol, 0.0, 0.0, 0.0, levelName + "_Buy");
    else
-      result = trade.Sell(volume, _Symbol, 0.0, stopLossPrice, takeProfitPrice, levelName + "_Sell");
+      result = trade.Sell(volume, _Symbol, 0.0, 0.0, 0.0, levelName + "_Sell");
 
    if(result)
      {
       flag = true;
-      Log(StringFormat("Trade placed (%s %s) lots=%.2f level=%.5f SL=%.5f TP=%.5f", _Symbol, levelName, volume, levelPrice, stopLossPrice, takeProfitPrice));
+      if(!PositionSelect(_Symbol))
+        {
+         PrintFormat("Trade placed but position not found for %s (%s).", _Symbol, isBuy ? "BUY" : "SELL");
+         return(true);
+        }
+
+      long posMagic = (long)PositionGetInteger(POSITION_MAGIC);
+      if(posMagic != MagicNumber)
+        {
+         PrintFormat("Trade placed but magic mismatch for %s (%s).", _Symbol, isBuy ? "BUY" : "SELL");
+         return(true);
+        }
+
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double finalSL = isBuy
+                       ? openPrice - stopDistancePoints * _Point
+                       : openPrice + stopDistancePoints * _Point;
+      double finalTP = isBuy
+                       ? openPrice + tpDistancePoints * _Point
+                       : openPrice - tpDistancePoints * _Point;
+
+      finalSL = NormalizeDouble(finalSL, _Digits);
+      finalTP = NormalizeDouble(finalTP, _Digits);
+
+      int freezeLevelPoints = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+      bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      bool canModify = IsValidSLTP(isBuy, finalSL, finalTP, bid, ask)
+                       && RespectsStopsAndFreeze(isBuy, finalSL, bid, ask, _Point, stopLevelPts, freezeLevelPoints);
+
+      if(canModify)
+        {
+         ResetLastError();
+         if(!trade.PositionModify(_Symbol, finalSL, finalTP))
+           {
+            int error = GetLastError();
+            PrintFormat("Failed to set SL/TP after fill for %s (%s). Error=%d. %s",
+                        _Symbol,
+                        isBuy ? "BUY" : "SELL",
+                        error,
+                        trade.ResultRetcodeDescription());
+           }
+        }
+      else
+        {
+         PrintFormat("SL/TP modify skipped for %s (%s): invalid or stop/freeze. open=%.5f SL=%.5f TP=%.5f stopLevelPts=%d freezeLevelPts=%d",
+                     _Symbol,
+                     isBuy ? "BUY" : "SELL",
+                     openPrice,
+                     finalSL,
+                     finalTP,
+                     stopLevelPts,
+                     freezeLevelPoints);
+        }
+
+      Log(StringFormat("Trade placed (%s %s) lots=%.2f level=%.5f open=%.5f SL=%.5f TP=%.5f stopPts=%.1f tpPts=%.1f stopLevelPts=%d freezeLevelPts=%d",
+                       _Symbol,
+                       levelName,
+                       volume,
+                       levelPrice,
+                       openPrice,
+                       finalSL,
+                       finalTP,
+                       stopDistancePoints,
+                       tpDistancePoints,
+                       stopLevelPts,
+                       freezeLevelPoints));
       return(true);
      }
 
@@ -1264,25 +1327,29 @@ bool ExecuteTrade(const string levelName, bool isBuy, double levelPrice, bool &f
    return(false);
   }
 
-double CalculateStopDistance()
+double CalculateStopDistancePoints()
   {
-   if(SLMode == SL_MODE_FIXED_PIPS)
-      return(FixedSLPips * GetPipSize());
+   if(SLMode == SL_MODE_FIXED_POINTS)
+      return(FixedSLPoints);
 
    double atrBuffer[];
-   if(CopyBuffer(g_atrHandle, 0, 1, 1, atrBuffer) != 1) // FIX
+   if(CopyBuffer(g_atrHandle, 0, 1, 1, atrBuffer) != 1)
       return(0.0);
 
    double atrValue = atrBuffer[0];
-   return(atrValue * ATRMultiplier);
+   if(atrValue <= 0.0)
+      return(0.0);
+
+   double atrPoints = atrValue / _Point;
+   return(atrPoints * ATRMultiplier);
   }
 
-double CalculateTakeProfitDistance(double stopDistance)
+double CalculateTakeProfitDistancePoints(double stopDistancePoints)
   {
-   if(TPMode == TP_MODE_FIXED_PIPS)
-      return(FixedTPPips * GetPipSize());
+   if(TPMode == TP_MODE_FIXED_POINTS)
+      return(FixedTPPoints);
 
-   return(stopDistance * RiskReward);
+   return(stopDistancePoints * RiskReward);
   }
 
 double CalculateVolume(double riskDistance)
@@ -1426,15 +1493,6 @@ double CalculateVolumeFromStopLoss(bool isBuy, double entryPrice, double stopLos
      }
 
    return(NormalizeDouble(volume, precision));
-  }
-
-double GetPipSize()
-  {
-   if(_Digits == 3 || _Digits == 5)
-      return(_Point * 10.0);
-   if(_Digits == 1)
-      return(_Point * 10.0);
-   return(_Point);
   }
 
 bool IsHighImpactNewsNear(int beforeMinutes, int afterMinutes)
