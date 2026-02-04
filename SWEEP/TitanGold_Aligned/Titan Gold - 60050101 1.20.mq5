@@ -11,7 +11,7 @@ CTrade trade;
 //--- enums
 enum ENUM_ATTACH_MODE
   {
-   AttachMode_IfOneSideSweptPlaceOnlyTheOpposite_IfNoneSweptPlaceBoth=0
+   AttachMode_IfOneSideSweptOpposite_IfNoneBoth=0
   };
 
 //--- inputs (order must match screenshot)
@@ -33,7 +33,7 @@ input bool     InpUseRolloverBlock = true;
 input int      InpRolloverBlockStart = 2350; // broker time HHMM
 input int      InpRolloverBlockEnd = 10; // broker time HHMM (can cross midnight)
 input int      InpWaitAfterNewD1Seconds = 600; // wait after new D1 bar before placing orders
-input ENUM_ATTACH_MODE InpAttachMode = AttachMode_IfOneSideSweptPlaceOnlyTheOpposite_IfNoneSweptPlaceBoth;
+input ENUM_ATTACH_MODE InpAttachMode = AttachMode_IfOneSideSweptOpposite_IfNoneBoth;
 input bool     InpEnableRequestLimitProtection = true;
 input int      InpRequestRetryWaitSeconds = 10; // wait before retrying after a failed place
 input int      InpMaxOrderPlacementAttempts = 5; // max order placement attempts per D1 bar/day
@@ -229,13 +229,15 @@ void DeleteOppositePendings(long positionType)
   {
    for(int i=OrdersTotal()-1; i>=0; --i)
      {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
+      ulong ticket = OrderGetTicket(i);
+      if(ticket==0)
+         continue;
+      if(!OrderSelect(ticket))
          continue;
       if(OrderGetInteger(ORDER_MAGIC)!=(long)InpMagicNumber || OrderGetString(ORDER_SYMBOL)!=_Symbol)
          continue;
 
       long type = OrderGetInteger(ORDER_TYPE);
-      ulong ticket = (ulong)OrderGetInteger(ORDER_TICKET);
       if(positionType==POSITION_TYPE_BUY && type==ORDER_TYPE_SELL_STOP)
          trade.OrderDelete(ticket);
       else if(positionType==POSITION_TYPE_SELL && type==ORDER_TYPE_BUY_STOP)
@@ -247,13 +249,16 @@ void DeleteAllPendings()
   {
    for(int i=OrdersTotal()-1; i>=0; --i)
      {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
+      ulong ticket = OrderGetTicket(i);
+      if(ticket==0)
+         continue;
+      if(!OrderSelect(ticket))
          continue;
       if(OrderGetInteger(ORDER_MAGIC)!=(long)InpMagicNumber || OrderGetString(ORDER_SYMBOL)!=_Symbol)
          continue;
       long type = OrderGetInteger(ORDER_TYPE);
       if(type==ORDER_TYPE_BUY_STOP || type==ORDER_TYPE_SELL_STOP)
-         trade.OrderDelete((ulong)OrderGetInteger(ORDER_TICKET));
+         trade.OrderDelete(ticket);
      }
   }
 
@@ -261,7 +266,10 @@ bool HasPendingOrder(long orderType)
   {
    for(int i=OrdersTotal()-1; i>=0; --i)
      {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES))
+      ulong ticket = OrderGetTicket(i);
+      if(ticket==0)
+         continue;
+      if(!OrderSelect(ticket))
          continue;
       if(OrderGetInteger(ORDER_MAGIC)!=(long)InpMagicNumber || OrderGetString(ORDER_SYMBOL)!=_Symbol)
          continue;
@@ -282,7 +290,7 @@ void PlaceDailyPendings(double pdh,double pdl)
    bool allowBuy = true;
    bool allowSell = true;
 
-   if(InpAttachMode==AttachMode_IfOneSideSweptPlaceOnlyTheOpposite_IfNoneSweptPlaceBoth)
+   if(InpAttachMode==AttachMode_IfOneSideSweptOpposite_IfNoneBoth)
      {
       if(buySwept && !sellSwept)
         {
