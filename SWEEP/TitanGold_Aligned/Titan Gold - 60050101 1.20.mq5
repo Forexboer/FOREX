@@ -1,3 +1,8 @@
+/*
+CHANGELOG
+- Updated position selection loops to use PositionGetTicket + PositionSelectByTicket for build compatibility.
+- Added helper for position selection to avoid PositionSelectByIndex (not supported on some builds).
+*/
 #property strict
 #property copyright ""
 #property link      ""
@@ -175,11 +180,11 @@ bool HasOpenPosition()
   {
    for(int i=PositionsTotal()-1; i>=0; --i)
      {
-      if(PositionSelectByIndex(i))
-        {
-         if(PositionGetInteger(POSITION_MAGIC)==(long)InpMagicNumber && PositionGetString(POSITION_SYMBOL)==_Symbol)
-            return true;
-        }
+      ulong ticket = 0;
+      if(!SelectPositionByIndex(i,ticket))
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC)==(long)InpMagicNumber && PositionGetString(POSITION_SYMBOL)==_Symbol)
+         return true;
      }
    return false;
   }
@@ -188,7 +193,8 @@ void ManageOpenPositions()
   {
    for(int i=PositionsTotal()-1; i>=0; --i)
      {
-      if(!PositionSelectByIndex(i))
+      ulong ticket = 0;
+      if(!SelectPositionByIndex(i,ticket))
          continue;
       if(PositionGetInteger(POSITION_MAGIC)!=(long)InpMagicNumber || PositionGetString(POSITION_SYMBOL)!=_Symbol)
          continue;
@@ -225,6 +231,14 @@ void ManageOpenPositions()
       if(InpDeleteOppositePendingOnEntry)
          DeleteOppositePendings(type);
      }
+  }
+
+bool SelectPositionByIndex(int index,ulong &ticket)
+  {
+   ticket = PositionGetTicket(index);
+   if(ticket==0)
+      return false;
+   return PositionSelectByTicket(ticket);
   }
 
 void DeleteOppositePendings(long positionType)
