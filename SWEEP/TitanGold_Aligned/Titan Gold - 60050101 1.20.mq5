@@ -128,7 +128,8 @@ bool GetPreviousDayLevels(double &pdh,double &pdl,double &prevClose,double &toda
    int copied = CopyRates(_Symbol,PERIOD_D1,0,2,rates);
    if(copied<2)
      {
-      RefreshRates();
+      MqlTick tick;
+      SymbolInfoTick(_Symbol,tick);
       copied = CopyRates(_Symbol,PERIOD_D1,0,2,rates);
      }
    if(copied<2)
@@ -158,7 +159,8 @@ int GetSpreadPoints()
 
 bool IsWithinRolloverWindow()
   {
-   int nowMinutes = TimeHour(TimeCurrent())*60 + TimeMinute(TimeCurrent());
+   datetime nowTime = TimeCurrent();
+   int nowMinutes = TimeHour(nowTime)*60 + TimeMinute(nowTime);
    int startMinutes = (InpRolloverBlockStart/100)*60 + (InpRolloverBlockStart%100);
    int endMinutes = (InpRolloverBlockEnd/100)*60 + (InpRolloverBlockEnd%100);
 
